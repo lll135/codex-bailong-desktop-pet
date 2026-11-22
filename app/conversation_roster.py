@@ -45,10 +45,15 @@ class ConversationRoster:
         # Bound old in-memory details; pending IDs remain available separately.
         disposable=sorted((s for s,v in self.items.items() if v['state'] not in ACTIVE and s not in self.pending),key=lambda s:self.items[s]['updated'],reverse=True)
         for sid in disposable[64:]:self.items.pop(sid,None)
-    def selection(self,unread,now=None):
+    def selection(self,unread,now=None,source=None,*,balanced=False):
         pending=list(dict.fromkeys(session_id(s) for s,t in reversed(unread)));self.pending=set(pending)
         done=[dict(self.items.get(sid,dict(session=sid,title=self.names.get(sid) or '会话 '+sid[-4:],text='')),state='complete') for sid in pending]
         active=sorted([v for v in self.items.values() if v['state'] in ACTIVE and v['session'] not in pending],key=lambda v:(v['state']!='waiting',v['start'],v['session']))
+        if source is not None or balanced:
+            from antigravity import source_of
+        if source is not None:
+            done=[v for v in done if source_of(v['session'])==source]
+            active=[v for v in active if source_of(v['session'])==source]
         waiting=[v for v in active if v['state']=='waiting']
         pool=done+active
         if self.page and pool:
@@ -58,6 +63,10 @@ class ConversationRoster:
         elif active:
             kept=[v for sid in self.pinned for v in active if v['session']==sid and v not in waiting]
             chosen=(waiting+kept+[v for v in active if v not in kept and v not in waiting])[:2]
+            if balanced and source is None and len(chosen)==2:
+                first_source=source_of(chosen[0]['session'])
+                other=next((v for v in active if source_of(v['session'])!=first_source),None)
+                if other is not None:chosen[1]=other
         else:chosen=done[:2]
         self.pinned=[v['session'] for v in chosen]
         now=time.monotonic() if now is None else now

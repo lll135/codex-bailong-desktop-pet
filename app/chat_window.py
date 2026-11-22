@@ -474,7 +474,7 @@ class ChatWindow(QWidget):
         self.retry_button=self.transcript.retry_button;self.retry_button.setAccessibleName('重试上条消息');self.retry_button.clicked.connect(self.retry)
         self.transcript.copy_button.clicked.connect(self.copy_reply)
         self.send_button=chat_symbol('↑','发送',self.send);self.send_button.setProperty('role','primary');self.send_button.setFixedSize(28,25);row.addWidget(self.send_button)
-        self.stop_button=QPushButton('■');self.stop_button.setAccessibleName('停止回复');self.stop_button.setToolTip('停止');self.stop_button.setFixedSize(28,25);self.stop_button.clicked.connect(self.stop);row.addWidget(self.stop_button)
+        self.stop_button=QPushButton('■');self.stop_button.setAccessibleName('停止回复');self.stop_button.setToolTip('停止');self.stop_button.setFixedSize(28,25);self.stop_button.clicked.connect(self.stop_requested);row.addWidget(self.stop_button)
         composer.addLayout(row);layout.addSpacing(7);layout.addWidget(self.compose)
         self.follow=QCheckBox('跟随桌宠');self.follow.setChecked(pet.settings.get('chat_follow',False));self.follow.toggled.connect(self.save_follow);layout.addWidget(self.follow)
         if embedded:self.follow.hide()
@@ -489,7 +489,8 @@ class ChatWindow(QWidget):
         self._service_name=service.get('name','自定义 API') if service else '自定义 API'
         self._service_model=service.get('model','') if service else '尚未配置'
         connected=bool(service)
-        if config.get('service')=='chatgpt':
+        using=self.session.get('service') or config.get('service')
+        if using=='chatgpt':
             from chatgpt_oauth import ChatGPTAccount
             self._service_name='ChatGPT 套餐 · 预览'
             model=config.get('chatgpt_model','')
@@ -498,6 +499,11 @@ class ChatWindow(QWidget):
                 connected=bool(ChatGPTAccount(self.root).record())
                 self._service_model=self.chatgpt_models.get(model,'已连接') if connected else '待授权'
             except OSError:self._service_model='授权不可读'
+        elif using=='antigravity':
+            from antigravity_sidecar import configured_project,endpoint
+            profile=Path.home();connected=bool(configured_project(profile) and endpoint(profile))
+            self._service_name='Antigravity'
+            self._service_model='桌面 App' if connected else '待连接'
         self.service_button.setToolTip(self._service_name+' / '+self._service_model)
         self._fit_service_summary()
         if self.settings_page:
@@ -528,7 +534,7 @@ class ChatWindow(QWidget):
     def reload(self):
         self.sessions.blockSignals(True);self.sessions.clear()
         for s in self.store.sessions:self.sessions.addItem(s['title'],s['id'])
-        self.sessions.setCurrentIndex(self.sessions.findData(self.session['id']));self.sessions.blockSignals(False);self.render()
+        self.sessions.setCurrentIndex(self.sessions.findData(self.session['id']));self.sessions.blockSignals(False);self.refresh_service_summary();self.render()
     def _replace_text(self,text):
         from performance_metrics import METRICS
         with METRICS.span('chat_document_update'):
@@ -551,8 +557,16 @@ class ChatWindow(QWidget):
         self._replace_text(text)
         self.transcript.refresh_theme_colors()
         self.send_button.setEnabled(not self.busy);self.send_button.setVisible(not self.busy)
-        self.retry_button.setEnabled(not self.busy);self.retry_button.setVisible(bool(self.session['messages']) and not self.busy)
+        pending=self.session.get('antigravity_pending')
+        can_retry=bool(self.session['messages']) and (self.session.get('service')!='antigravity' or bool(pending))
+        self.retry_button.setEnabled(not self.busy);self.retry_button.setVisible(can_retry and not self.busy)
+        if self.session.get('service')=='antigravity':
+            retry_hint='重试发送' if self.session.get('antigravity_not_sent') else '重新获取 Antigravity 回复'
+            self.retry_button.setToolTip(retry_hint);self.retry_button.setAccessibleName(retry_hint)
+        else:self.retry_button.setToolTip('重试');self.retry_button.setAccessibleName('重试')
         self.stop_button.setEnabled(self.busy);self.stop_button.setVisible(self.busy)
+        stop_hint='请求 Antigravity 停止当前回复' if self.session.get('service')=='antigravity' else '停止'
+        self.stop_button.setToolTip(stop_hint)
         self.service_button.setEnabled(not self.busy)
         self.transcript._position_actions()
     def flush_stream(self):
@@ -564,7 +578,7 @@ class ChatWindow(QWidget):
         self.confirmation.cancel()
         if self.busy:self.stop()
         selected=next((s for s in self.store.sessions if s['id']==self.sessions.currentData()),None)
-        if selected:self.session=selected;self.render()
+        if selected:self.session=selected;self.refresh_service_summary();self.render()
     def new(self):
         self.confirmation.cancel();self.stop()
         if self.store.load_error:
@@ -580,9 +594,11 @@ class ChatWindow(QWidget):
         self.confirmation.request(f'清空会话“{name}”的全部消息？会保留会话；正在生成的回复也将停止，此操作不可撤销。',lambda:self.clear_confirmed(key),'确认清空')
     def clear_confirmed(self,key):
         if self.session['id']!=key:return
-        self.stop();messages=self.session['messages'];self.session['messages']=[]
+        self.stop();previous=dict(self.session);self.session['messages']=[]
+        for field in ('antigravity_chat','antigravity_pending','antigravity_previous','antigravity_index','antigravity_not_sent'):
+            self.session.pop(field,None)
         try:self.store.save();self.status.setText('当前会话消息已清空。')
-        except OSError:self.session['messages']=messages;self.status.setText('清空失败，原消息已保留。')
+        except OSError:self.session.clear();self.session.update(previous);self.status.setText('清空失败，原消息已保留。')
         self.render()
     def delete(self):
         key=self.session['id'];name=self.session['title']
@@ -650,11 +666,33 @@ class ChatWindow(QWidget):
             if service!=config['service']:self.cancel_account_job()
             if service!=config['service'] or model is not None:select_chat_service(self.root,service,model)
             self.refresh_service_summary()
+            if self.session.get('service') and self.session['service']!=service:
+                self.status.setText('默认服务已保存，新会话使用它。当前会话继续使用原服务。')
+                return
             if service=='chatgpt':
                 from chatgpt_oauth import ChatGPTAccount
                 if not ChatGPTAccount(self.root).record():
                     self.status.setText('请在聊天设置中连接 ChatGPT。')
         except OSError as error:self.status.setText(str(error))
+
+    def open_antigravity_workspace(self):
+        from antigravity_chat_setup import prepare_workspace
+        try:
+            root=prepare_workspace(Path.home())
+            if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(root))):raise OSError('闲聊目录未能打开。')
+        except (OSError,ValueError) as error:self.status.setText(str(error));return
+        self.status.setText('在 Antigravity 创建只包含此目录的项目，再填写该项目 ID。')
+
+    def configure_antigravity_chat(self,project):
+        if self.account_job or self.busy:return
+        from antigravity_sidecar import install,project_id
+        try:project=project_id(project)
+        except ValueError as error:self.status.setText(str(error));return
+        def configured(value,error):
+            self.status.setText(error or '闲聊桥接已配置。Antigravity 加载桥接和项目配置后可开始对话。')
+            self.refresh_service_summary()
+        self.status.setText('正在配置 Antigravity 闲聊桥接…')
+        self.launch_account_job(lambda job:install(Path.home(),project),configured)
 
     def launch_account_job(self,work,finished):
         job=AccountJob(self)
@@ -754,7 +792,11 @@ class ChatWindow(QWidget):
         if self.store.load_error:self.status.setText(self.store.load_error);return
         try:config=load_chat_config(self.root)
         except OSError as error:self.status.setText('聊天配置无法读取，原文件和输入已保留。'+str(error));return
-        if config['service']=='chatgpt':
+        service=self.session.get('service') or config['service']
+        if service=='antigravity':
+            self.start_antigravity(text,retry,config)
+            return
+        if service=='chatgpt':
             self.prepare_chatgpt(text,retry,config)
             return
         provider=next((p for p in config.get('providers',[]) if p['id']==config.get('active')),None)
@@ -763,6 +805,42 @@ class ChatWindow(QWidget):
         except ProviderValidationError as error:self.status.setText(str(error)+' 请在“聊天服务”中修改，输入已保留。');return
         except OSError as error:self.status.setText('无法读取聊天凭据，原文件和输入已保留。'+str(error));return
         self.start_stream(ChatStream,provider,key,text,retry,config)
+
+    def start_antigravity(self,text,retry,config):
+        from antigravity_chat import AntigravityChatStream
+        from antigravity_sidecar import configured_project,endpoint
+        profile=Path.home()
+        if endpoint(profile) is None or not configured_project(profile):
+            self.status.setText('请先在聊天设置配置桥接，并打开 Antigravity 桌面 App。');return
+        pending=self.session.get('antigravity_pending')
+        if pending and not retry:
+            self.status.setText('还有一条待确认的 Antigravity 消息。请点重试获取回复，或新建会话。');return
+        if retry and not pending:return
+        chat=self.session.get('antigravity_chat') or uuid.uuid4().hex
+        previous=self.session.get('antigravity_previous','')
+        prompt=None
+        unsent=self.session.get('antigravity_not_sent') is True
+        if not pending or unsent:
+            style=self.pet.manifest.get('systemPrompt') or config.get('system_prompt',CHAT_DEFAULT['system_prompt'])
+            prompt=(style+'\n\n'+text) if not previous else text
+            if len(prompt.encode('utf-16-le'))//2>14000:
+                self.status.setText('Antigravity 聊天的单次内容和角色设定合计请控制在 14000 字以内。');return
+            new=not pending
+            pending=pending or uuid.uuid4().hex
+            old=dict(self.session)
+            messages=self.session['messages']+[dict(role='user',content=text)] if new else self.session['messages']
+            self.session.update(service='antigravity',antigravity_chat=chat,antigravity_pending=pending,messages=messages,title=text[:24])
+            self.session.pop('antigravity_not_sent',None)
+            try:self.store.save()
+            except OSError:
+                self.session.clear();self.session.update(old)
+                self.status.setText(self.store.load_error or '聊天记录保存失败，输入已保留。');return
+            if new:self.input.clear()
+        stream=AntigravityChatStream(self);self.stream=stream;self.partial='';self.busy=True
+        stream.done.connect(lambda value:self.on_done(stream,value))
+        stream.failed.connect(lambda message:self.on_error(stream,message))
+        self.status.setText('正在等待 Antigravity 回复…');self.reload()
+        stream.start(profile,chat,pending,previous,prompt,self.session.get('antigravity_index',-1))
 
     def prepare_chatgpt(self,text,retry,config):
         if self.account_job:return
@@ -803,11 +881,12 @@ class ChatWindow(QWidget):
         try:stream.start(provider,key,payload)
         except (ValueError,OSError) as error:
             self.busy=False;stream.deleteLater();self.stream=None;self.status.setText(str(error));self.render();return
-        previous_messages,previous_title=self.session['messages'],self.session['title']
+        previous=dict(self.session)
         self.session['messages']=messages;self.session['title']=text[:24]
+        self.session.setdefault('service','chatgpt' if stream_type is ChatGPTStream else 'custom')
         try:self.store.save()
         except OSError:
-            self.session['messages']=previous_messages;self.session['title']=previous_title
+            self.session.clear();self.session.update(previous)
             self.stream=None;self.busy=False;stream.cancel();stream.deleteLater()
             self.status.setText(self.store.load_error or '聊天记录保存失败；输入已保留，请检查磁盘空间和目录权限。');self.render();return
         self.input.clear()
@@ -819,16 +898,74 @@ class ChatWindow(QWidget):
     def on_done(self,stream,value):
         if stream is not self.stream or not self.busy:return
         self.flush_stream()
-        if value:self.session['messages'].append(dict(role='assistant',content=value))
+        agy=self.session.get('service')=='antigravity'
+        old=dict(self.session)
+        if value:self.session['messages']=self.session['messages']+[dict(role='assistant',content=value)]
+        if agy:
+            self.session['antigravity_previous']=self.session.pop('antigravity_pending')
+            self.session['antigravity_index']=stream.index
         try:
             self.store.save();self.status.setText('')
         except OSError:
+            if agy:
+                self.session.clear();self.session.update(old)
             self.status.setText('回复已完成，但记录保存失败；请先复制回复，并检查磁盘空间和目录权限。')
+            if agy:self.status.setText('回复未能保存；请检查目录权限后点重试获取同一条回复。')
         finally:
             self.busy=False;self.stream=None;stream.deleteLater();self.render()
     def on_error(self,stream,message):
         if stream is not self.stream or not self.busy:return
-        self.busy=False;self.stream=None;stream.deleteLater();self.status.setText(message+'；上条消息已保留，可重试。');self.render()
+        self.busy=False;self.stream=None;stream.deleteLater()
+        if self.session.get('service')=='antigravity':
+            if stream.ended and not self.retire_antigravity_turn(self.session,self.session.get('antigravity_pending')):
+                message='Antigravity 回合已结束，白龙未能更新本地聊天记录。'
+            elif stream.not_sent:
+                self.session['antigravity_not_sent']=True
+                try:self.store.save()
+                except OSError:self.session.pop('antigravity_not_sent',None)
+            self.status.setText(message)
+        else:self.status.setText(message+'；上条消息已保留，可重试。')
+        self.render()
+
+    def retire_antigravity_turn(self,session,operation):
+        if not operation or session.get('antigravity_pending')!=operation:return False
+        previous=dict(session)
+        session['antigravity_previous']=session.pop('antigravity_pending')
+        session.pop('antigravity_not_sent',None)
+        try:self.store.save()
+        except OSError:
+            session.clear();session.update(previous)
+            return False
+        return True
+
+    def stop_requested(self):
+        operation=self.session.get('antigravity_pending')
+        chat=self.session.get('antigravity_chat')
+        remote=self.session.get('service')=='antigravity' and self.stream and chat and operation
+        session=self.session
+        bridge=getattr(self.pet,'antigravity_bridge',None)
+        turns={sid:value['turn'] for sid,value in bridge.tasks.active.items()} if bridge and remote else {}
+        self.stop()
+        if not remote or self.account_job:return
+        from antigravity_chat import stop_remote_reply
+        profile=Path.home()
+        self.status.setText('正在向 Antigravity 请求停止…')
+        def finished(result,error):
+            if error:
+                if self.session is session:self.status.setText(error)
+                return
+            status,remote_id=result
+            if status=='stopped':
+                updated=any(item is session for item in self.store.sessions) and self.retire_antigravity_turn(session,operation)
+                text='Antigravity 已停止本轮回复。' if updated else 'Antigravity 已停止，白龙未能更新本地聊天记录。'
+                if bridge:
+                    from antigravity import PREFIX
+                    sid=PREFIX+remote_id
+                    event=bridge.tasks.interrupt(sid,turns.get(sid))
+                    if event:bridge.event.emit(event)
+            else:text='Antigravity 本轮已完成，可重新获取回复。'
+            if self.session is session:self.status.setText(text);self.render()
+        self.launch_account_job(lambda job:stop_remote_reply(profile,chat,operation),finished)
     def stop(self):
         self.stream_timer.stop();self._stream_pending.clear()
         if self.account_preparing:
@@ -836,7 +973,8 @@ class ChatWindow(QWidget):
             self.account_preparing=False;self.busy=False
         if self.stream:
             stream=self.stream;self.stream=None;self.busy=False;stream.cancel();stream.deleteLater()
-            self.status.setText('已停止；未完成回复没有加入历史。')
+            text='已停止在白龙等待。Antigravity 中的回复可能仍在继续。' if self.session.get('service')=='antigravity' else '已停止；未完成回复没有加入历史。'
+            self.status.setText(text)
         self.partial='';self.render()
     def closeEvent(self,event):self.cancel_account_job();self.stop();self.hide();event.ignore()
     def keyPressEvent(self,event):

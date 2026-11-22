@@ -229,14 +229,14 @@ def hourly_usage(db,start,end,include_end=False):
     return hours,models
 
 
-def report_snapshot(db,now,rows=None):
+def report_snapshot(db,now,rows=None,*,count_messages=True):
     current=datetime.fromtimestamp(now);end=current.replace(hour=0,minute=0,second=0,microsecond=0);start=end-timedelta(days=1)
     if rows is None:rows=daily_model_rows(db,None,now,include_end=True)
     daily=[dict(day=d,model=m or UNKNOWN,total=t,input=i,output=o,known=bool(k)) for d,m,t,i,o,k in rows]
     model_totals={}
     for r in daily:model_totals[r['model']]=model_totals.get(r['model'],0)+r['total']
     sessions=db.execute("SELECT COUNT(DISTINCT session) FROM usage WHERE stamp<=? AND session!=''",(now,)).fetchone()[0]
-    messages=db.execute('SELECT COUNT(*) FROM messages WHERE stamp>=? AND stamp<?',(start.timestamp(),end.timestamp())).fetchone()[0]
+    messages=db.execute('SELECT COUNT(*) FROM messages WHERE stamp>=? AND stamp<?',(start.timestamp(),end.timestamp())).fetchone()[0] if count_messages else None
     hours,hour_models=hourly_usage(db,start.timestamp(),end.timestamp())
     total=sum(r['total'] for r in daily)
     return dict(day=start.strftime('%Y-%m-%d'),hours=hours,hour_models=hour_models,daily_models=daily,

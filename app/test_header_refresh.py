@@ -3,7 +3,7 @@ import os
 os.environ.setdefault('QT_QPA_PLATFORM','offscreen')
 import unittest,copy,time
 from PySide6.QtCore import Qt,QPoint,QRect,QEvent,QAbstractAnimation
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor,QFont
 from PySide6.QtWidgets import QApplication,QToolButton,QWidget,QToolTip
 from PySide6.QtTest import QTest
 from compact_bubble import CompactBubble
@@ -66,6 +66,29 @@ class HeaderRefreshTests(unittest.TestCase):
                 b.refresh_status();settle(b)
                 self.assertEqual(initial,(b._status_title.text(),self.bounds(b._status_title),self.bounds(b._status_title.parentWidget())))
                 self.assert_header_fits()
+    def test_dual_source_titles_share_font_and_arrow_follows_text_width(self):
+        b=self.bubble;b.antigravity_enabled=True;b.show()
+        for expanded in (False,True,False):
+            observed=[]
+            for source,label in (('codex','Codex'),('antigravity','Antigravity'),('codex','Codex')):
+                b.card_source=source;b.show_status(expanded);settle(b)
+                title=b._status_title;arrow=b._header._source_arrow
+                self.assertEqual(title.text(),label)
+                self.assertFalse(title.property('codexWordmark'))
+                self.assertEqual(title.font().pixelSize(),15)
+                self.assertEqual(title.font().weight(),QFont.Weight.DemiBold)
+                self.assertEqual(title.width(),title.fontMetrics().horizontalAdvance(label)+2)
+                self.assertEqual(self.bounds(arrow).left()-self.bounds(title).right()-1,2)
+                self.assertTrue(b.rect().contains(self.bounds(arrow)))
+                self.assert_header_fits()
+                observed.append((title.font(),title.width(),self.bounds(arrow).left()))
+            self.assertEqual(observed[0],observed[2])
+            self.assertEqual(observed[0][0],observed[1][0])
+            self.assertGreater(observed[1][1],observed[0][1])
+            self.assertEqual(observed[1][2]-observed[0][2],observed[1][1]-observed[0][1])
+        b.antigravity_enabled=False;b.redraw();settle(b)
+        self.assertTrue(b._status_title.property('codexWordmark'))
+        self.assertTrue(b._header._source_arrow.isHidden())
     def test_wordmark_preserves_session_overflow_without_duplicate_badge(self):
         self.event(session='a');self.event(session='b')
         self.event(session='c')

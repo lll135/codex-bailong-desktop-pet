@@ -66,10 +66,12 @@ class OverviewStats(QWidget):
         p=QPainter(self);p.setRenderHint(QPainter.RenderHint.Antialiasing);r=self.report
         cells=[('会话数',f"{r.get('sessions',0):,}"),('活跃天数',str(r.get('active_days',0))),
                ('Token 总量',compact_tokens(r.get('all_total',0))),('最常用模型',r.get('favorite_model','暂无记录')),
-               ('消息数',f"{r.get('messages',0):,}"),('高峰时段',f"{r['peak_hour']:02}:00–{r['peak_hour']+1:02}:00" if r.get('peak_hour') is not None else '暂无用量')]
+               ('高峰时段',f"{r['peak_hour']:02}:00–{r['peak_hour']+1:02}:00" if r.get('peak_hour') is not None else '暂无用量')]
         p.setPen(QColor(theme_color(PRIMARY)));p.setFont(font(11));p.drawText(QRectF(1,0,self.width()-2,16),Qt.AlignmentFlag.AlignVCenter,'累计  本机记录')
         p.drawText(QRectF(1,105,self.width()-2,18),Qt.AlignmentFlag.AlignVCenter,'昨日')
-        p.setPen(QColor(theme_color(MUTED)));p.drawText(QRectF(1,105,self.width()-2,18),Qt.AlignmentFlag.AlignRight|Qt.AlignmentFlag.AlignVCenter,f"{r.get('messages',0):,} 条消息")
+        messages=r.get('messages',0)
+        if messages is not None:
+            p.setPen(QColor(theme_color(MUTED)));p.drawText(QRectF(1,105,self.width()-2,18),Qt.AlignmentFlag.AlignRight|Qt.AlignmentFlag.AlignVCenter,f"{messages:,} 条消息")
         for i,(label,value) in enumerate(cells[:4]):
             rect=self.cell_rect(i)
             p.setPen(Qt.PenStyle.NoPen);p.setBrush(QColor(theme_color('#f1ecf6')));p.drawRoundedRect(rect,6,6)
@@ -149,7 +151,8 @@ class ReportPlot(QWidget,RasterChart,ComboChart):
         order={entry['model']:index for index,entry in enumerate(series['models'])}
         rate_label='全模型回合均速' if selected else '回合均速'
         self.combo_layers(p,dynamic,bins,items,chart,by_model=True,model_order=order,rate_label=rate_label,
-                          cost_buckets=chart_cost_buckets(bins,self.report.get('_projects'),selected=selected,through=series['through']))
+                          cost_buckets=chart_cost_buckets(bins,self.report.get('_projects'),selected=selected,through=series['through']) if self.report.get('supports_rates',True) else None,
+                          show_rates=self.report.get('supports_rates',True))
         self.hits=[(record['rect'],record['label']+'  '+record['amount']) for record in self._combo_records]
         self.points=[QPointF(record['rect'].center().x(),chart.bottom()) for record in self._combo_records]
         p.setFont(self._axis_font);p.setPen(theme_color(MUTED))
@@ -166,14 +169,16 @@ class ReportPlot(QWidget,RasterChart,ComboChart):
         bins=[dict(label=f'{i:02}:00–{i+1:02}:00',value=v,models=models[i] if i<len(models) else {}) for i,v in enumerate(values)]
         rates=self.report.get('rates') or {}
         items=rates.get('yesterday') or []
-        self.combo_layers(p,dynamic,bins,items,plot,by_model=True,output_rates=rates.get('yesterday_output') or [])
+        show_rates=self.report.get('supports_rates',True)
+        self.combo_layers(p,dynamic,bins,items,plot,by_model=True,output_rates=(rates.get('yesterday_output') or []) if show_rates else None,show_rates=show_rates)
         self.hits=[(r['rect'],b['label']+'  '+format(b['value'],',')+' Tokens') for r,b in zip(self._combo_records,bins)]
         self.points=[QPointF(r['rect'].center().x(),plot.bottom()) for r in self._combo_records]
         theme,bar,line=rate_colors();p.setFont(font(10));p.setPen(Qt.PenStyle.NoPen);p.setBrush(QColor(bar));p.drawRoundedRect(QRectF(3,3,5,7),1,1)
         if any(models):
             p.setBrush(QColor(model_swatch(0)));p.drawRoundedRect(QRectF(3,3,5,7),1,1)
         p.setPen(QColor(theme['muted']));p.drawText(QRectF(12,0,53,16),Qt.AlignmentFlag.AlignVCenter,'模型用量' if any(models) else '用量')
-        p.setPen(QPen(QColor(line),1.8));p.drawLine(QPointF(62,7),QPointF(74,7));p.setPen(QColor(theme['muted']));p.drawText(QRectF(79,0,85,16),Qt.AlignmentFlag.AlignVCenter,'小时输出速率')
+        if show_rates:
+            p.setPen(QPen(QColor(line),1.8));p.drawLine(QPointF(62,7),QPointF(74,7));p.setPen(QColor(theme['muted']));p.drawText(QRectF(79,0,85,16),Qt.AlignmentFlag.AlignVCenter,'小时输出速率')
         p.setPen(QColor(theme['muted']));p.setFont(font(10))
         for f,label in [(0,'00时'),(.5,'12'),(1,'24时')]:
             p.drawText(QRectF(plot.left()+f*plot.width()-(32 if f==1 else 15 if f==.5 else 0),plot.bottom()+2,32,18),Qt.AlignmentFlag.AlignVCenter|(Qt.AlignmentFlag.AlignRight if f==1 else Qt.AlignmentFlag.AlignLeft),label)
@@ -284,7 +289,11 @@ class DailyReport(QWidget):
     def set_snapshot(self,snapshot):
         snapshot=snapshot or {};previous=self.snapshot;self.snapshot=snapshot
         r=snapshot.get('report') or {};old=previous.get('report') or {}
-        if r==old and all(snapshot.get(k)==previous.get(k) for k in ('partial','unavailable','refresh_failed','week_cycle','quota_history','projects')):return
+        if r==old and all(snapshot.get(k)==previous.get(k) for k in ('provider','partial','unavailable','refresh_failed','week_cycle','quota_history','projects')):return
+        if snapshot.get('provider')!=previous.get('provider'):
+            self.selected_model=None;self._series_cache.clear()
+            for cache in self._body_cache.values():cache['refs']['scroll'].hide();cache['refs']['scroll'].deleteLater()
+            self._body_cache.clear()
         self._data_revision+=1
         if r.get('day')!=old.get('day') or r.get('daily_models')!=old.get('daily_models'):self._series_cache.clear()
         if self._animating or self.follow.active:
@@ -624,6 +633,7 @@ class DailyReport(QWidget):
         if self.page=='cycle':return ''
         if self.snapshot.get('unavailable'):return '当前统计暂不可用；图中保留上次成功的本机记录。'
         if self.snapshot.get('readable_files')==0:return '源日志暂不可读；显示本机历史统计，近期用量可能不完整。'
+        if self.snapshot.get('provider')=='antigravity':return '本机 Antigravity 会话库 / 仅统计可读取的请求。'
         if self.page=='overview':
             note='本机记录 / API 等价估算 (USD)'
             return note+('  部分日志受限' if self.snapshot.get('partial') else '')+('  部分模型未识别' if r.get('metadata_incomplete') else '')
@@ -681,11 +691,15 @@ class DailyReport(QWidget):
             filter_layout.addWidget(self.model_date_entry,0,Qt.AlignmentFlag.AlignRight);filter_layout.addStretch()
             scope.addWidget(filters);self.layout.addWidget(nav)
         self.day_label.setText(r.get('day','--')[5:].replace('-','/')+' 昨日' if self.page=='overview' else '')
+        agy=self.snapshot.get('provider')=='antigravity'
+        self.header_title.setText('Antigravity' if agy else '数据面板')
+        for page in ('cycle','projects'):self.page_buttons[page].setVisible(not agy)
         for page,b in self.page_buttons.items():b.setChecked(page==self.page)
         show_period=self.page in ('models','projects')
         self.cost_more_button.setVisible(self.page=='projects')
         self.quota_more_button.setVisible(self.page=='cycle')
-        height=51 if self.page=='models' else 27
+        self.model_rate_label.setVisible(not agy)
+        height=51 if self.page=='models' and not agy else 27
         self.scope_row.setFixedHeight(height);self.scope_left.setFixedHeight(height)
         self.scope_row.setVisible(show_period);self.nav_panel.setFixedHeight(29+height if show_period else 27)
         is_cost=self.page=='projects'
@@ -758,14 +772,17 @@ class DailyReport(QWidget):
             self.hour_total=self.label(compact_tokens(r.get('yesterday_total',0)),14,True);self.hour_total.hide()
             self.daily_cost=DailyCostButton();self.daily_cost.set_data(r,self.snapshot.get('projects'));self.daily_cost.clicked.connect(self.open_yesterday_cost)
             chart_layout.addWidget(self.daily_cost)
+            agy=self.snapshot.get('provider')=='antigravity'
+            if agy:
+                self.daily_cost.hide();self.hour_total.show();chart_layout.addWidget(self.hour_total)
             self.plot=ReportPlot(r);chart_layout.addWidget(self.plot)
             self.readout=self.secondary(self.label(self._daily_readout(r),9))
-            self.readout.setObjectName('report_hourly_readout');chart_layout.addWidget(self.readout)
+            self.readout.setObjectName('report_hourly_readout');chart_layout.addWidget(self.readout);self.readout.setVisible(not agy)
             # Hourly detail is shown in the chart's hover window.
             content.addWidget(chart)
             hint_row=QHBoxLayout();hint_row.setSpacing(4)
             chart_layout.removeWidget(self.readout);hint_row.addWidget(self.readout,1)
-            info=tab('估算说明',self.show_cost_explanation,checkable=False);info.setObjectName('report_daily_explanation');info.setFixedHeight(20);hint_row.addWidget(info);chart_layout.addLayout(hint_row)
+            info=tab('估算说明',self.show_cost_explanation,checkable=False);info.setObjectName('report_daily_explanation');info.setFixedHeight(20);hint_row.addWidget(info);info.setVisible(not agy);chart_layout.addLayout(hint_row)
             self.body_height=self.stats.height()+94+18+17+20
         else:
             series=self._series()

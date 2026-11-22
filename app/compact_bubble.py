@@ -29,7 +29,7 @@ EXPANDED_HEIGHT=480
 def action_icon(kind,island=False):
     pixmap=QPixmap(32,32);pixmap.fill(Qt.GlobalColor.transparent)
     p=QPainter(pixmap);p.setRenderHint(QPainter.RenderHint.Antialiasing);p.scale(2,2)
-    p.setPen(QPen(QColor(theme_color('#75618d')),1.5 if kind in ('details','compact','report') else 1.9,Qt.PenStyle.SolidLine,Qt.PenCapStyle.RoundCap,Qt.PenJoinStyle.RoundJoin))
+    p.setPen(QPen(QColor(theme_color('#75618d')),1.5 if kind in ('details','compact','report','source') else 1.9,Qt.PenStyle.SolidLine,Qt.PenCapStyle.RoundCap,Qt.PenJoinStyle.RoundJoin))
     if kind=='refresh':
         p.drawArc(QRectF(3,3,10,10),20*16,290*16)
         p.setPen(Qt.PenStyle.NoPen);p.setBrush(QColor(theme_color('#75618d')));p.drawPolygon(QPolygonF([QPointF(14,2.5),QPointF(14,7),QPointF(9.5,5)]))
@@ -40,6 +40,7 @@ def action_icon(kind,island=False):
         p.drawLine(3,4,10,4);p.drawLine(3,8,13,8);p.drawLine(3,12,10,12)
         p.drawPolyline(QPolygonF([QPointF(10,4),QPointF(14,8),QPointF(10,12)]))
     elif kind=='collapse':p.drawPolyline(QPolygonF([QPointF(3,10),QPointF(8,5),QPointF(13,10)]))
+    elif kind=='source':p.drawPolyline(QPolygonF([QPointF(5,6.5),QPointF(8,9.5),QPointF(11,6.5)]))
     elif kind=='compact':
         p.drawRoundedRect(QRectF(2,5,12,6),3,3)
     elif kind=='expand':
@@ -447,6 +448,9 @@ class CompactBubble(Bubble):
     chatRequested=Signal()
     shortcutRequested=Signal()
     codexRequested=Signal()
+    antigravityRequested=Signal()
+    sourceRequested=Signal(str)
+    quotaGroupRequested=Signal(str)
     conversationRequested=Signal(str)
     optionRequested=Signal(str,bool)
     modeChanged=Signal(str)
@@ -477,6 +481,9 @@ class CompactBubble(Bubble):
         self._chart_entry=False;self._plot_resume=None
         from conversation_roster import ConversationRoster
         self.roster=ConversationRoster();self._roster_pending=False
+        self.card_source='codex';self.antigravity_enabled=False;self.antigravity_status_text=''
+        self.antigravity_snapshot=None;self.antigravity_token_busy=False
+        self.antigravity_quota=None;self.antigravity_quota_group=''
         self._short_status_timer=QTimer(self)
         self._short_status_timer.setSingleShot(True)
         self._short_status_timer.timeout.connect(self.refresh_status)
@@ -591,11 +598,11 @@ class CompactBubble(Bubble):
     def _task_layout_changed(self):
         view=self.status_view
         if self.panel_page!='status' or self.is_compact() or not view.isVisible():return False
-        selected,_=self.roster.selection(self.status_indicator.unread)
+        selected,_=self.visible_tasks()
         if self.expanded:
             target=43 if self._speech_text else max(1,len(selected))*43+9
             return view.full and view.height()!=target
-        text=self._speech_text or ('等待 Codex 新消息' if self.roster.items else self.status)
+        text=self._speech_text or self.waiting_text()
         lines=len(selected) if selected and not self._speech_text else len(view.lines_for(text,extra=0))
         return view.height()!=lines*view.line_height
     def show_page(self,key,widget):
@@ -693,6 +700,9 @@ class CompactBubble(Bubble):
 
     def select_dashboard(self,page):
         if page not in ('tokens','reset'):return
+        if self.card_source=='antigravity':
+            if page=='tokens':self._sync_today_selection()
+            return
         if page==self.dashboard_page:
             if self.deck:self.deck.tabs.buttons[page].setChecked(True)
             self._sync_today_selection()
@@ -703,7 +713,7 @@ class CompactBubble(Bubble):
         else:self._chart_entry=True;self.redraw()
         self._sync_today_selection()
     def _sync_today_selection(self):
-        if self.today_tokens_card:self.today_tokens_card.set_selected(self.dashboard_page=='tokens' and self.token_range=='day')
+        if self.today_tokens_card:self.today_tokens_card.set_selected((self.card_source=='antigravity' or self.dashboard_page=='tokens') and self.token_range=='day')
         menu=getattr(self.deck,'range_menu',None)
         if menu:
             blocked=menu.blockSignals(True);menu.setCurrentIndex(menu.findData(self.token_range));menu.blockSignals(blocked)
@@ -730,15 +740,22 @@ class CompactBubble(Bubble):
     def show_reset_details(self):
         self.detail_tab='reset';self.show_status(True)
     def request_refresh_all(self):
+        if self.card_source=='antigravity':
+            if not self.antigravity_token_busy:self.refreshAllRequested.emit()
+            return
         if self.refresh_busy:return
         self.set_refresh_busy(True);self.refreshAllRequested.emit()
     def set_refresh_busy(self,busy):
-        self.refresh_busy=bool(busy);self.refresh_button.set_busy(self.refresh_busy)
+        self.refresh_busy=bool(busy)
+        if self.card_source=='codex':self.refresh_button.set_busy(self.refresh_busy)
         if self.shortcut_button and self.capsule_action=='refresh':self.shortcut_button.set_busy(self.refresh_busy)
+        if self.card_source=='antigravity':return
         self.refresh_button.setToolTip('正在刷新额度、Token 与重置公告…' if busy else '刷新额度、Token 与重置公告')
     def finish_refresh(self,success=True):
-        self.refresh_busy=False;self.refresh_button.finish(success)
+        self.refresh_busy=False
         if self.shortcut_button and self.capsule_action=='refresh':self.shortcut_button.finish(success)
+        if self.card_source=='antigravity':return
+        self.refresh_button.finish(success)
         text='额度、Token 已刷新；重置公告暂不可用，已保留上次记录' if success=='partial' else '额度、Token 与重置公告已刷新' if success else '数据刷新失败，保留上次记录；点击重试'
         if success=='partial' and self.reset_error_details:text='额度、Token 已刷新；'+self.reset_error_details.get('message','重置公告暂不可用')
         self.refresh_button.setToolTip(text);self.refresh_button.setAccessibleDescription(text)
@@ -754,7 +771,17 @@ class CompactBubble(Bubble):
         changed=self.token_busy!=bool(busy)
         self.token_busy=bool(busy)
         if changed:self.dataBusyChanged.emit('token',self.token_busy)
+
+    def selected_snapshot(self):
+        return self.antigravity_snapshot if self.card_source=='antigravity' else self.token_snapshot
+
+    def selected_quota_data(self):
+        if self.card_source=='codex':return self.windows,self.quota_caption
+        from antigravity_quota import quota_view
+        return quota_view(self.antigravity_quota,self.antigravity_quota_group)
     def _status_heading(self):
+        if self.antigravity_enabled:
+            return 'Antigravity' if self.card_source=='antigravity' else 'Codex'
         indicator=self.status_indicator
         if indicator.unread:return f'{len(indicator.unread)}条待查看'
         waiting=[v for v in self.roster.items.values() if v['state']=='waiting']
@@ -772,35 +799,66 @@ class CompactBubble(Bubble):
         active=sum(v['state'] in ('thinking','working','responding','waiting') for v in self.roster.items.values())
         active=max(active,int(self.status_indicator.active))
         count=f'{active} 个会话正在进行' if heading=='Codex' and active>1 else ''
-        # Four 28px actions and their five layout gaps are reserved before
-        # measuring the title. This stays identical across first paint/update.
+        # Reserve the visible actions and layout gaps before measuring the title.
         margins=self.layout.contentsMargins();inner=self.content.width()-margins.left()-margins.right()
         actions=sum(button.width() for button in self._header_actions)
         gap=header.layout().spacing();available=inner-actions-gap*(len(self._header_actions)+1)
-        cluster=title.parentWidget();item_gap=cluster.layout().spacing()
-        icon_width=self.status_indicator.width()+item_gap
+        cluster=title.parentWidget();name_layout=cluster.layout()
+        item_gap=2 if self.antigravity_enabled else 4
+        if name_layout.spacing()!=item_gap:name_layout.setSpacing(item_gap)
+        arrow=header._source_arrow
+        arrow_width=arrow.width()+item_gap if self.antigravity_enabled else 0
+        icon_width=self.status_indicator.width()+item_gap+arrow_width
         text_budget=max(1,available-icon_width-2)
-        wordmark=heading=='Codex' and text_budget>=CodexWordmarkButton.MARK_WIDTH
+        wordmark=not self.antigravity_enabled and heading=='Codex' and text_budget>=CodexWordmarkButton.MARK_WIDTH
         if title.property('codexWordmark')!=wordmark:title.setProperty('codexWordmark',wordmark);title.update()
-        metrics=QFontMetrics(font(12,True));text=metrics.elidedText(heading,Qt.TextElideMode.ElideRight,text_budget)
+        title_font=font(15 if self.antigravity_enabled else 12)
+        if title.font()!=title_font:title.setFont(title_font)
+        metrics=title.fontMetrics();text=metrics.elidedText(heading,Qt.TextElideMode.ElideRight,text_budget)
         title.setText(text)
         title.setFixedWidth(CodexWordmarkButton.MARK_WIDTH if wordmark else metrics.horizontalAdvance(text)+2)
         cluster.setFixedSize(icon_width+title.width(),28)
-        title.setToolTip('\n'.join(filter(None,(heading,count,'点击打开 Codex'))))
-        title.setAccessibleName('；'.join(filter(None,(heading,count,'点击打开 Codex'))))
+        app='Antigravity' if self.card_source=='antigravity' else 'Codex'
+        title.setToolTip('\n'.join(filter(None,(heading,count,'点击打开 '+app))))
+        title.setAccessibleName('；'.join(filter(None,(heading,count,'点击打开 '+app))))
         header.layout().activate()
+
+    def visible_tasks(self, now=None):
+        source=self.card_source if self.expanded and self.antigravity_enabled else None
+        return self.roster.selection(self.status_indicator.unread,now,source,balanced=self.antigravity_enabled)
+
+    def waiting_text(self):
+        if self.card_source=='antigravity':return self.antigravity_status_text or '等待 Antigravity 新任务'
+        return '等待 Codex 新消息' if self.roster.items else self.status
+
+    def show_source_menu(self, button):
+        from popup_motion import ContextMenu
+        menu=ContextMenu(button)
+        for key,label in (('codex','Codex'),('antigravity','Antigravity')):
+            action=menu.addAction(label)
+            action.triggered.connect(lambda checked,key=key:self.sourceRequested.emit(key))
+            action.setCheckable(True);action.setChecked(key==self.card_source)
+        menu.aboutToHide.connect(menu.deleteLater)
+        menu.popup(button.mapToGlobal(button.rect().bottomLeft()))
     def _refresh_conversation_rows(self):
         self._short_status_timer.stop()
         if self.expanded and getattr(self,'_task_count',None) is not None:
-            active=sum(v['state'] in ('thinking','working','responding','waiting') for v in self.roster.items.values())
-            self._task_count.setText(f'{active} 个进行中' if active else '暂无进行中任务')
-            if getattr(self,'_task_dot',None) is not None:self._task_dot.setVisible(bool(active))
+            from antigravity import source_of
+            active=[v for v in self.roster.items.values() if v['state'] in ('thinking','working','responding','waiting')]
+            other=sum(source_of(v['session'])!=self.card_source for v in active) if self.antigravity_enabled else 0
+            current=len(active)-other
+            caption=f'{current} 个进行中' if current else '暂无进行中任务'
+            if other:
+                label='Codex' if self.card_source=='antigravity' else 'Antigravity'
+                caption+=f'，{label} 还有 {other} 项'
+            self._task_count.setText(caption)
+            if getattr(self,'_task_dot',None) is not None:self._task_dot.setVisible(bool(current))
         self.status_view.expanded_row=self.expanded
         if self._speech_text:
             self.status_view.clear_conversations();self.status_view.extra=0;self.status_view.overflow.hide()
             self.status_view.set_status(self._speech_text,self.expanded);return
         now=time.monotonic()
-        selected,extra=self.roster.selection(self.status_indicator.unread,now)
+        selected,extra=self.visible_tasks(now)
         expiries=[v['short_status'][1] for v in selected if 'short_status' in v and v['short_status'][1]>now
                   and v['text']!=self.roster.items[v['session']]['text']]
         if expiries:self._short_status_timer.start(max(1,math.ceil((min(expiries)-now)*1000)))
@@ -810,11 +868,17 @@ class CompactBubble(Bubble):
         from conversation_roster import LABELS
         if selected:
             rows=[(v['session'],'已完成' if v['state']=='complete' else clean_text(v['text'],80)) for v in selected]
-            metadata={v['session']:dict(title=clean_text(v['title'],160),state=v['state']) for v in selected}
+            def caption(task):
+                title=task['title']
+                if self.antigravity_enabled and not self.expanded:
+                    source='Antigravity' if task['session'].startswith('antigravity:') else 'Codex'
+                    if not title.startswith(source+' '):title=source+' '+title
+                return clean_text(title,160)
+            metadata={v['session']:dict(title=caption(v),state=v['state']) for v in selected}
             self.status_view.set_conversations(rows,extra,self.expanded,metadata)
         else:
             self.status_view.clear_conversations()
-            self.status_view.set_status('等待 Codex 新消息' if self.roster.items else self.status,self.expanded)
+            self.status_view.set_status(self.waiting_text(),self.expanded)
             if self.expanded:self.status_view._set_height(52)
     def refresh_status(self):
         """Keep static cards and chart clocks alive for text-only changes."""
@@ -825,7 +889,7 @@ class CompactBubble(Bubble):
         if self.is_island():
             if self.island is None:self.redraw();return
             from conversation_roster import LABELS
-            selected,extra=self.roster.selection(self.status_indicator.unread)
+            selected,extra=self.roster.selection(self.status_indicator.unread,balanced=self.antigravity_enabled)
             self.status_indicator.session_summary='/'.join('压缩' if v.get('compacting') and v['state']!='waiting' else LABELS.get(v['state'],'待命').removesuffix('中') for v in selected)+(' +'+str(extra) if extra else '')
             self.island.refresh();return
         title=getattr(self,'_status_title',None)
@@ -839,22 +903,29 @@ class CompactBubble(Bubble):
         self.setAccessibleName(self.heading+'；'+self.status)
     def _details_revision(self):
         import json
-        snapshot=self.token_snapshot
+        snapshot=self.selected_snapshot()
         tokens=None if snapshot is None else {key:snapshot.get(key) for key in ('unavailable','all_total','total','partial')}
-        return json.dumps((self.windows,self.quota_caption,tokens,self.reset_snapshot,self.reset_feed_error,self.reset_error_details),sort_keys=True,ensure_ascii=False,default=str)
+        windows,caption=self.selected_quota_data()
+        payload=(windows,caption,self.reset_snapshot,self.reset_feed_error,self.reset_error_details) if self.card_source=='codex' else (windows,caption)
+        return json.dumps((self.card_source,tokens,payload),sort_keys=True,ensure_ascii=False,default=str)
     def _status_header(self):
         header=self._status_headers.get(self.expanded)
         if header is None:
             header=QWidget(self.content);header.setObjectName('status_header');header.setFixedHeight(27 if self.expanded else 26);row=QHBoxLayout(header);row.setContentsMargins(0,0,0,0);row.setSpacing(6 if self.expanded else 2)
-            title=CodexWordmarkButton();title.setObjectName('open_codex');title.setFont(font(12,True))
+            title=CodexWordmarkButton();title.setObjectName('open_codex')
             title.setFixedHeight(26)
             title.setFocusPolicy(Qt.FocusPolicy.NoFocus);title.setCursor(Qt.CursorShape.PointingHandCursor)
-            set_theme_style(title,'QToolButton{'+FONT_CSS+'font-size:12px;color:#75618d;border:0;padding:0;background:transparent;text-align:left;}QToolButton:hover{color:#8b78a6;}')
-            title.setAccessibleName('打开 Codex');title.clicked.connect(lambda:self.codexRequested.emit())
+            set_theme_style(title,'QToolButton{color:#75618d;border:0;padding:0;background:transparent;text-align:left;}QToolButton:hover{color:#8b78a6;}')
+            title.setAccessibleName('打开 Codex')
+            title.clicked.connect(lambda:(self.antigravityRequested if self.card_source=='antigravity' else self.codexRequested).emit())
             self._status_title=title
             name_group=QWidget(header);name_group.setObjectName('codex_heading');name_group.setFixedHeight(26)
             name_row=QHBoxLayout(name_group);name_row.setContentsMargins(0,0,0,0);name_row.setSpacing(4)
             name_row.addWidget(title,0,Qt.AlignmentFlag.AlignVCenter)
+            arrow=action_button('source','切换卡片来源',parent=name_group,hit_size=22,keyboard=True)
+            arrow.setObjectName('card_source_menu');arrow.setFixedHeight(26)
+            arrow.clicked.connect(lambda:self.show_source_menu(arrow));name_row.addWidget(arrow)
+            header._source_arrow=arrow
             row.addWidget(name_group);row.addStretch(1)
             self.refresh_button.setFixedSize(26,26);self.quota_refresh_button=self.refresh_button;row.addWidget(self.refresh_button);self.refresh_button.show()
             report_button=action_button('report','打开 / 收起数据面板',hit_size=26);report_button.setObjectName('bubble_report')
@@ -874,6 +945,13 @@ class CompactBubble(Bubble):
         header.layout().insertWidget(2,self.refresh_button);self.refresh_button.show()
         self.quota_refresh_button=self.refresh_button
         self._status_title=title
+        header._source_arrow.setVisible(self.antigravity_enabled)
+        self.refresh_button.set_busy(self.antigravity_token_busy if self.card_source=='antigravity' else self.refresh_busy)
+        if self.card_source=='antigravity':
+            self.refresh_button.setToolTip('刷新 Antigravity 额度和 Token')
+        else:
+            if self.refresh_button.toolTip()=='刷新 Antigravity 额度和 Token':
+                self.refresh_button.setToolTip('正在刷新额度、Token 与重置公告…' if self.refresh_busy else '刷新额度、Token 与重置公告')
         compact_target='minimal' if self.bubble_mode=='minimal' or self._edge_compact else 'mini'
         mini.setToolTip('收起到极简模式' if compact_target=='minimal' else '收起到胶囊模式')
         mini.setAccessibleName(mini.toolTip());mini.setVisible(not self.expanded)
@@ -962,12 +1040,16 @@ class CompactBubble(Bubble):
             # routine status, quota and token updates preserve manual switching.
             from dashboard_cards import CardDeck
             from quota_summary import QuotaSummary,TodayTokens
-            pending=pending_reset(self.reset_snapshot);key=(schedule_key(pending),locally_reset(self.reset_snapshot)) if pending else None
-            if key!=self._active_reset_key:
+            agy=self.card_source=='antigravity';snapshot=self.selected_snapshot()
+            windows,quota_caption=self.selected_quota_data()
+            reset_snapshot=None if agy else self.reset_snapshot
+            pending=pending_reset(reset_snapshot);key=(schedule_key(pending),locally_reset(reset_snapshot)) if pending else None
+            if not agy and key!=self._active_reset_key:
                 self.dashboard_page='reset' if reset_has_priority(self.reset_snapshot) else 'tokens';self._active_reset_key=key
+            front='tokens' if agy else self.dashboard_page
             from quota_history import visible_quota_change
             settings=getattr(self.owner_pet(),'settings',{})
-            warning=visible_quota_change(self.token_snapshot,self.windows,decline_threshold=settings.get('quota_decline_threshold',10),
+            warning=None if agy else visible_quota_change(snapshot,windows,decline_threshold=settings.get('quota_decline_threshold',10),
                                    increase_threshold=settings.get('quota_increase_threshold',15))
             container=QWidget(self.content)
             gap=self.card_pixels(8)
@@ -977,7 +1059,7 @@ class CompactBubble(Bubble):
             bottom_padding=10 if self.expanded else 0
             stack=QVBoxLayout(container);stack.setContentsMargins(0,0,0,bottom_padding);stack.setSpacing(gap)
             cards=QWidget(container);row=QHBoxLayout(cards);row.setContentsMargins(0,0,0,0);row.setSpacing(gap);stack.addWidget(cards)
-            quota=QuotaSummary(self.windows,self.quota_caption,parent=cards,progress_cache=self._ring_values,anomaly=warning,expanded=self.expanded);self.quota_summary_card=quota;quota.expand.connect(self.show_quota_details)
+            quota=QuotaSummary(windows,quota_caption,parent=cards,progress_cache=self._ring_values,anomaly=warning,expanded=self.expanded);self.quota_summary_card=quota;quota.expand.connect(self.show_quota_details)
             quota.anomalyRequested.connect(self.quotaCompareRequested.emit)
             quota.setFixedHeight(self.card_pixels(quota.height()))
             footer_height=self.card_pixels(24 if self.expanded else 22)
@@ -985,29 +1067,31 @@ class CompactBubble(Bubble):
             quota.setFixedWidth(left_width);quota.resetDue.connect(self._quota_reset_due);row.addWidget(quota,1)
             self.ring_kinds=['quota']*len(quota.items)+['time','tokens']
             deck=self._deck_cache.get(self.expanded)
-            if deck is not None and (deck.page!=self.dashboard_page or deck.token_range!=self.token_range):
+            if deck is not None and (deck.page!=front or deck.token_range!=self.token_range or deck.property('agy')!=agy):
                 deck.deleteLater();deck=None
             if deck is None:
-                deck=CardDeck(self.dashboard_page,self.token_snapshot,self.reset_snapshot,self.reset_error_details or self.reset_feed_error,self.reset_busy,parent=cards,token_busy=self.token_busy,token_range=self.token_range,expanded=self.expanded)
+                deck=CardDeck(front,snapshot,reset_snapshot,self.reset_error_details or self.reset_feed_error,self.reset_busy,parent=cards,token_busy=self.antigravity_token_busy if agy else self.token_busy,token_range=self.token_range,expanded=self.expanded)
+                deck.setProperty('agy',agy);deck.tabs.buttons['reset'].setVisible(not agy)
                 deck.reset_details_requested.connect(self.show_reset_details)
                 deck.selected.connect(self.select_dashboard)
                 deck.token_range_changed.connect(self.select_token_range)
                 self._deck_cache[self.expanded]=deck
             if deck is not None and getattr(getattr(deck.content,'plot',None),'_hold_hover_layout',False):
-                deck.refresh_held_plot(self.token_snapshot,self.reset_snapshot,self.reset_error_details or self.reset_feed_error)
+                deck.refresh_held_plot(snapshot,reset_snapshot,self.reset_error_details or self.reset_feed_error)
             self.deck=deck;deck.set_surface_scale(self.card_pixels);deck.setFixedWidth(right_width)
             row.addWidget(deck,1,Qt.AlignmentFlag.AlignTop);deck.show()
             daily=self.today_tokens_card
             if daily is None:
-                daily=TodayTokens(self.token_snapshot,parent=container);self.today_tokens_card=daily;daily.activated.connect(self.show_today_tokens)
+                daily=TodayTokens(snapshot,parent=container);self.today_tokens_card=daily;daily.activated.connect(self.show_today_tokens)
             else:daily.setParent(container)
-            daily.set_selected(self.dashboard_page=='tokens' and self.token_range=='day')
+            daily.set_selected(front=='tokens' and self.token_range=='day')
             from live_rate_ui import LiveRateCard
             footer=QWidget(container);footer.setObjectName('status_footer');footer_row=QHBoxLayout(footer);footer_row.setContentsMargins(0,0,0,0);footer_row.setSpacing(gap)
             if getattr(self,'live_rate_card',None) is None:self.live_rate_card=LiveRateCard(getattr(self,'live_output_rate',None),footer)
             else:
                 self.live_rate_card.setParent(footer)
-                self.live_rate_card.set_data(getattr(self,'live_output_rate',self.live_rate_card.value))
+            self.live_rate_card.set_data(None if agy else getattr(self,'live_output_rate',None))
+            self.live_rate_card.setEnabled(not agy)
             self.live_rate_card.expanded=self.expanded;self.live_rate_card.setFixedSize(left_width,footer_height)
             footer_row.addWidget(self.live_rate_card,1);self.live_rate_card.show()
             daily.setFixedSize(right_width,footer_height)
@@ -1021,11 +1105,12 @@ class CompactBubble(Bubble):
                     self._details_cache=DetailsTabs(self);self._details_key=self._details_revision()
                     now=time.time();due=[(int(now//60)+1)*60]
                     pending=pending_reset(self.reset_snapshot)
-                    stamps=[w.get('resetsAt') for w in self.windows]+([pending.get('scheduled')] if pending else [])
+                    stamps=[w.get('resetsAt') for w in windows]+([pending.get('scheduled')] if pending else [])
                     due.extend(stamp for value in stamps if (stamp:=epoch(value)) is not None and stamp>now)
                     self._details_cache_until=min(due)
                 self.details_tabs=self._details_cache
                 index=self.details_tabs.keys.index(self.detail_tab) if self.detail_tab in self.details_tabs.keys else 0
+                if agy and self.detail_tab=='reset':index=0
                 self.details_tabs._restore_index(index);self.details_tabs._last_index=index
                 self.add(self.details_tabs)
         self._redrawing=False;self._fit_height()
@@ -1071,19 +1156,21 @@ class CompactBubble(Bubble):
         if inactive_deck is not None:inactive_deck.deleteLater()
         from quota_history import visible_quota_change
         settings=getattr(self.owner_pet(),'settings',{})
-        quota.set_anomaly(visible_quota_change(self.token_snapshot,self.windows,
-            decline_threshold=settings.get('quota_decline_threshold',10),increase_threshold=settings.get('quota_increase_threshold',15)))
-        deck.snapshot=self.token_snapshot
+        if self.card_source=='codex':
+            quota.set_anomaly(visible_quota_change(self.token_snapshot,self.windows,
+                decline_threshold=settings.get('quota_decline_threshold',10),increase_threshold=settings.get('quota_increase_threshold',15)))
+        snapshot=self.selected_snapshot()
+        deck.snapshot=snapshot
         chart=deck.pages.get('tokens')
         if chart is not None:
-            chart.plot.set_data(self.token_snapshot,chart.period)
+            chart.plot.set_data(snapshot,chart.period)
             chart.setAccessibleDescription(chart.plot.accessibleDescription())
         self._refresh_today()
         return True
     def _refresh_today(self):
         if self.size_transition.running or self.size_transition.preparing:return
         today=getattr(self,'today_tokens_card',None)
-        if today is not None:today.set_data(self.token_snapshot,live=self.live_today_value)
+        if today is not None:today.set_data(self.selected_snapshot(),live=self.live_today_value if self.card_source=='codex' else None)
     def owner_pet(self):return self._owner or self.parentWidget()
     def card_pixels(self,pixels):
         owner=self.owner_pet()
@@ -1214,7 +1301,7 @@ class CompactBubble(Bubble):
         layout_key=(circle,gap,island_width,self.show_quota,self.capsule_action)
         if self.island is not None and self._island_layout_key==layout_key and not self.size_transition.preparing:
             self.refresh_status()
-            if self._island_quota is not None:self._island_quota.set_data(self.windows,self.quota_caption)
+            if self._island_quota is not None:self._island_quota.set_data(*self.selected_quota_data())
             self._show_compact_surface()
             self._position_now()
             return
@@ -1225,7 +1312,8 @@ class CompactBubble(Bubble):
         self.quota_refresh_button=None;self.reset_refresh_buttons=[];self.token_refresh_buttons=[]
         self.layout.setContentsMargins(0,0,0,0);self.layout.setSpacing(0)
         self._island_layout_key=layout_key
-        self.content.setFixedWidth(circle+gap+island_width+(circle+gap if self.show_quota else 0))
+        show_quota=self.show_quota
+        self.content.setFixedWidth(circle+gap+island_width+(circle+gap if show_quota else 0))
         # A native status icon must stay under the bubble while being moved.
         cluster=QWidget(self.content);cluster.setFixedHeight(circle);row=QHBoxLayout(cluster);row.setContentsMargins(0,0,0,0);row.setSpacing(gap)
         circle_style='QToolButton{border:0;border-radius:'+str(circle//2)+'px;background:#302a3c;}QToolButton:hover{background:#494052;}QToolButton:pressed{background:#302a3c;}'
@@ -1240,12 +1328,12 @@ class CompactBubble(Bubble):
         self.status_indicator.set_island(True);self.island=StatusIsland(self.status_indicator,cluster)
         self.island.setFixedSize(island_width,circle)
         from conversation_roster import LABELS
-        selected,extra=self.roster.selection(self.status_indicator.unread)
+        selected,extra=self.roster.selection(self.status_indicator.unread,balanced=self.antigravity_enabled)
         self.status_indicator.session_summary='/'.join('压缩' if v.get('compacting') and v['state']!='waiting' else LABELS.get(v['state'],'待命').removesuffix('中') for v in selected)+(' +'+str(extra) if extra else '')
         self.island.refresh()
         self.island.expand.connect(lambda:self.set_mode('auto'));row.addWidget(self.island)
-        if self.show_quota:
-            quota=QuotaSatellite(self.windows,self.quota_caption,cluster);quota.clicked.connect(self.toggle_details)
+        if show_quota:
+            quota=QuotaSatellite(*self.selected_quota_data(),cluster);quota.clicked.connect(self.toggle_details)
             self._island_quota=quota
             quota.setFixedSize(circle,circle)
             if entering:quota.begin_reveal()
@@ -1253,7 +1341,7 @@ class CompactBubble(Bubble):
             quota.resetDue.connect(self._quota_reset_due);row.addWidget(quota)
         self.add(cluster);self._redrawing=False;self._fit_height()
         self._show_compact_surface()
-        if self.show_quota and entering and not self.size_transition.preparing and not self.size_transition.running:
+        if self._island_quota is not None and entering and not self.size_transition.preparing and not self.size_transition.running:
             QTimer.singleShot(0,quota,quota.start_reveal)
         self._position_now()
     def _show_compact_surface(self):
@@ -1277,7 +1365,8 @@ class CompactBubble(Bubble):
         self.clear();self._last_compact_surface='minimal';self.details_tabs=None;self.status_view.animation.stop();self.status_view.hide()
         self.quota_refresh_button=None;self.reset_refresh_buttons=[];self.token_refresh_buttons=[]
         size=self.card_pixels(54);self.layout.setContentsMargins(0,0,0,0);self.layout.setSpacing(0);self.content.setFixedWidth(size)
-        self.minimal_quota=MinimalQuota(self.windows,self.quota_caption,self)
+        windows,caption=self.selected_quota_data()
+        self.minimal_quota=MinimalQuota(windows,caption,self)
         self.minimal_quota.setFixedSize(size,size)
         self.minimal_quota.clicked.connect(self.open_normal_from_minimal);self.minimal_quota.resetDue.connect(self._quota_reset_due)
         if entering:self.minimal_quota.begin_reveal()

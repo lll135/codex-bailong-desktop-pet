@@ -64,6 +64,21 @@ class ThemeTests(unittest.TestCase):
             self.assertEqual(label.palette().color(QPalette.ColorRole.PlaceholderText).name(),palette()['muted'])
         from theme_registry import stylesheet
         self.assertEqual(label.styleSheet(),stylesheet(raw));label.deleteLater()
+    def test_source_arrow_is_small_and_recolors_on_the_existing_card(self):
+        card=CompactBubble();self.addCleanup(card.deleteLater);self.addCleanup(card.close)
+        card.antigravity_enabled=True;card.show();card.redraw();APP.processEvents()
+        arrow=card.findChild(QToolButton,'card_source_menu')
+        self.assertEqual((arrow.width(),arrow.height()),(22,26))
+        themes={key:{} for key in (*PRESETS,'bailong')}
+        themes['custom']=dict(theme_surface='#101820',theme_ink='#f0f0f0',theme_accent='#e08030')
+        for key,custom in themes.items():
+            with self.subTest(key=key):
+                apply_theme(key,custom,roots=[card])
+                icon=arrow.icon().pixmap(32,32).toImage()
+                pixels=[(x,y,icon.pixelColor(x,y)) for x in range(icon.width()) for y in range(icon.height()) if icon.pixelColor(x,y).alpha()]
+                self.assertIn(palette()['accentText'],{color.name() for _,_,color in pixels if color.alpha()==255})
+                self.assertLessEqual(max(x for x,_,_ in pixels)-min(x for x,_,_ in pixels)+1,16)
+                self.assertLessEqual(max(y for _,y,_ in pixels)-min(y for _,y,_ in pixels)+1,10)
     def test_theme_change_invalidates_rasters_without_resetting_reveal(self):
         # At midnight one hourly point has no area; a transparent layer cannot
         # demonstrate a theme recolor. Fix the fixture clock, not the real chart.

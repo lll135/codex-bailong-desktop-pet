@@ -60,6 +60,8 @@ class DesktopPet(EnhancedPet):
         self._drag_pointer=None;self._last_drag_move=0.
         self.pending_completion=None;self.settings_dialog=None;self.chat_window=None
         self.reactions=StatusReactions(time.monotonic());self.last_reaction=None
+        self.antigravity_bridge=None;self._assistant_presence={};self._monitor_assistants=monitor
+        self.antigravity_data=None;self._antigravity_data_refreshing=False;self._antigravity_refresh_targets=set()
         self.character_dir=STATE_DIR/'characters';self.character_dir.mkdir(exist_ok=True)
         self.created_at=time.monotonic();self.decode_error=None
         super().__init__(monitor)
@@ -97,12 +99,18 @@ class DesktopPet(EnhancedPet):
         self.bubble.chatRequested.connect(self.open_chat)
         self.bubble.shortcutRequested.connect(self.open_shortcut)
         self.bubble.codexRequested.connect(self.open_assistant)
+        self.bubble.antigravityRequested.connect(self.open_antigravity)
+        self.bubble.sourceRequested.connect(lambda source:self.set_option('card_source',source))
+        self.bubble.quotaGroupRequested.connect(lambda group:self.set_option('antigravity_quota_group',group))
         self.bubble.conversationRequested.connect(self.open_conversation)
         self.bubble.optionRequested.connect(self.set_option)
         self.bubble.modeChanged.connect(self.save_bubble_mode)
         if not self.settings_read_failed and self.settings.get('schema')!=2 and CONFIG.exists():
             shutil.copy2(CONFIG,STATE_DIR/'settings-before-0.5.0.json')
         self.settings=normalized(self.settings)
+        self.antigravity_timer=QTimer(self);self.antigravity_timer.setInterval(30000)
+        self.antigravity_timer.timeout.connect(self.refresh_visible_antigravity)
+        self.configure_assistant_source()
         from settings_controls import set_motion_mode,settle_motion
         set_motion_mode(self.settings['ui_animation_mode']);settle_motion()
         self._theme_preview=None;self._theme_preview_pending=False
@@ -159,6 +167,8 @@ class DesktopPet(EnhancedPet):
         if is_wsl_source():
             self._codex_exit_gate.reset();return
         if not self.settings.get('codex_exit') or self._codex_polling or self._codex_closing:return
+        if self.settings.get('antigravity_enabled') and self._assistant_presence.get('antigravity') is not False:
+            self._codex_exit_gate.reset();return
         self._codex_polling=True
         generation=self._codex_exit_gate.generation
         def read():
@@ -171,6 +181,8 @@ class DesktopPet(EnhancedPet):
     def observe_codex_presence(self,packet):
         self._codex_polling=False
         if self._codex_closing or not self.settings.get('codex_exit'):return
+        if self.settings.get('antigravity_enabled') and self._assistant_presence.get('antigravity') is not False:
+            self._codex_exit_gate.reset();return
         from codex_connection import is_wsl_source
         if is_wsl_source():
             self._codex_exit_gate.reset();return
@@ -661,6 +673,30 @@ class DesktopPet(EnhancedPet):
 
     @measured('ui_activity')
     def on_activity(self,event):
+        from antigravity import SOURCE,source_of
+        provider=source_of(event.get('session',''))
+        if event.get('kind')=='antigravity_presence':
+            if not self.bubble.antigravity_enabled:return
+            presence=event.get('open')
+            if self._assistant_presence.get(SOURCE) is True and presence is False and self.antigravity_bridge:
+                self.antigravity_bridge.disconnect_tasks()
+            elif presence is True and self.antigravity_bridge:
+                now=time.monotonic()
+                for sid,status in self.antigravity_bridge.tasks.active.items():
+                    self.reactions.confirm(sid,status['turn'],True,now)
+            self._assistant_presence[SOURCE]=presence;self.update_assistant_presence();return
+        if event.get('kind')=='antigravity_native':
+            if self.bubble.antigravity_enabled and self.antigravity_bridge:
+                for result in self.antigravity_bridge.tasks.observe_native(event['turns'],event['overview']):
+                    self.on_activity(result)
+            return
+        if provider==SOURCE and event.get('kind') in ('status','complete'):
+            if not self.bubble.antigravity_enabled:return
+            name=self.bubble.roster.names.get(event['session'])
+            if name:event=dict(event,title=name)
+            self.bubble.antigravity_status_text=event.get('display','') if event.get('state') in ('idle','interrupted') else ''
+            if event.get('state')!='interrupted':
+                self._assistant_presence[SOURCE]=True;self.update_assistant_presence()
         if event.get('kind')=='hidden_sessions':
             from session_read_state import session_id
             excluded={session_id(s) for s in event.get('sessions',[])}
@@ -693,25 +729,125 @@ class DesktopPet(EnhancedPet):
             self.bubble.roster.observe(event)
         if event.get('kind') in ('status','complete'):self.bubble.task_updated(event)
         elif event.get('kind')=='codex_presence':
-            self.reactions.present=event.get('open')
-            self.bubble.codex_open=event.get('open');self.bubble.evaluate_mode();return
+            self._assistant_presence['codex']=event.get('open');self.update_assistant_presence();return
         if event.get('kind')=='complete':
-            title=clean_text(event.get('title','Codex 任务'),70)
+            label='Antigravity' if provider==SOURCE else 'Codex'
+            title=clean_text(event.get('title',label+' 任务'),70)
             self._priority=10
-            try:self.say('Codex 任务完成啦！\n'+title,14000)
+            try:self.say(label+' 任务完成啦！\n'+title,14000)
             finally:self._priority=0
-            self.notify('Codex 任务已完成',title);self._completion_quota_refresh.request()
+            self.notify(label+' 任务已完成',title)
+            if provider=='codex':self._completion_quota_refresh.request()
             self.complete_animation(event)
+            if provider==SOURCE:
+                self.observe_combined_status();self.refresh_visible_antigravity()
         else:
             if event.get('kind')=='status':
                 self.reactions.observe(event,time.monotonic())
                 if self.reactions.completion is None:self.pending_completion=None
             elif event.get('kind')=='monitor_error':
                 self.reactions.observe(dict(state='offline',text='监听异常',active=0),time.monotonic())
-            super().on_activity(event)
+            if provider==SOURCE:self.observe_combined_status(event)
+            else:
+                super().on_activity(event)
+                if event.get('kind') in ('status','monitor_error'):self.observe_combined_status(event if event.get('kind')=='status' else None)
             if event.get('kind')=='status':self.quiet_background_speech()
             if event.get('kind')=='status' and self.settings.get('status_actions',True) and self.bubble.status_indicator.is_busy() and self.walking and not (self.dragging or self.throwing):
                 self.stop_walk(land=True)
+
+    def update_assistant_presence(self):
+        values=[self._assistant_presence.get('codex')]
+        if self.bubble.antigravity_enabled:values.append(self._assistant_presence.get('antigravity'))
+        present=True if True in values else False if all(value is False for value in values) else None
+        self.reactions.present=present;self.bubble.codex_open=present;self.bubble.evaluate_mode()
+
+    def observe_combined_status(self,event=None):
+        if not self.bubble.antigravity_enabled:return
+        active=len(self.antigravity_bridge.tasks.active) if self.antigravity_bridge else 0
+        base=self.last_activity
+        if not active and event is not None and event.get('session','').startswith('antigravity:') and not base.get('active'):
+            base=event
+        merged=dict(event or {},state='working' if active else base.get('state','idle'),
+                    active=active+base.get('active',0),waiting=base.get('waiting',0))
+        self.bubble.status_indicator.observe(merged)
+
+    def configure_assistant_source(self):
+        enabled=sys.platform=='win32' and self.settings.get('antigravity_enabled',False)
+        self.bubble.antigravity_enabled=enabled
+        self.bubble.card_source=self.settings.get('card_source','codex') if enabled else 'codex'
+        self.bubble.antigravity_quota_group=self.settings['antigravity_quota_group']
+        if self.activity:self.activity.watch_antigravity=enabled
+        if enabled and self._monitor_assistants:
+            if self.antigravity_bridge is None:
+                from antigravity_bridge import AntigravityBridge
+                self.antigravity_bridge=AntigravityBridge(Path.home(),self)
+                self.antigravity_bridge.event.connect(self.on_activity)
+            if not self.antigravity_bridge.start():self.say('Antigravity 状态桥接未启动，无法监听任务。',6000)
+        elif self.antigravity_bridge and self.antigravity_bridge.server.isListening():
+            for event in self.antigravity_bridge.tasks.disconnect():
+                self.bubble.roster.observe(event);self.reactions.observe(event,time.monotonic())
+            self.antigravity_bridge.close();self.bubble.status_indicator.observe(self.last_activity)
+        self.update_assistant_presence()
+        self._refresh_tray_icon()
+        if self.bubble.card_source=='antigravity' and self._monitor_assistants:
+            self.antigravity_timer.start()
+            QTimer.singleShot(0,self,self.refresh_visible_antigravity)
+        else:self.antigravity_timer.stop()
+
+    def refresh_visible_antigravity(self):
+        if self.bubble.card_source=='antigravity' and self.bubble.isVisible():
+            self.request_antigravity_data()
+
+    def request_antigravity_data(self,target=None):
+        if self.closing or self.bubble.card_source!='antigravity':return
+        if target:
+            self._antigravity_refresh_targets.add(target)
+            if target=='bubble':
+                self.bubble.antigravity_token_busy=True;self.bubble.refresh_button.set_busy(True)
+            elif self.bubble.report:self.bubble.report.set_refresh_busy(True)
+        if self.antigravity_data is None:
+            from antigravity_data import AntigravityData
+            profile=Path.home();root=profile/'.gemini'/'antigravity'/'conversations'
+            self.antigravity_data=AntigravityData(STATE_DIR/'antigravity-usage.sqlite3',root,profile,self)
+            self.antigravity_data.finished.connect(self.antigravity_data_ready)
+        if not self._antigravity_data_refreshing:
+            self._antigravity_data_refreshing=True;self.antigravity_data.start()
+
+    def antigravity_data_ready(self):
+        self._antigravity_data_refreshing=False
+        snapshot=self.antigravity_data.snapshot
+        quota=self.antigravity_data.quota
+        quota_changed=quota is not None and quota!=self.bubble.antigravity_quota
+        if quota_changed:self.bubble.antigravity_quota=quota
+        if snapshot is not None:
+            if not snapshot.get('report') and self.bubble.antigravity_snapshot:
+                snapshot=dict(self.bubble.antigravity_snapshot,partial=True,refresh_failed=True,unavailable=True)
+            self.bubble.antigravity_snapshot=snapshot
+        if self.closing or getattr(self,'_antigravity_data_exit_pending',False):return
+        if snapshot and snapshot.get('pending') and self.bubble.card_source=='antigravity':
+            QTimer.singleShot(150,self,self.request_antigravity_data);return
+        targets=self._antigravity_refresh_targets.copy();self._antigravity_refresh_targets.clear()
+        self.bubble.antigravity_token_busy=False
+        if self.bubble.card_source!='antigravity':return
+        if quota_changed or not self.bubble.refresh_token_snapshot():self.bubble.redraw()
+        self._refresh_tray_icon()
+        success=bool(snapshot and not snapshot.get('partial') and not snapshot.get('unavailable'))
+        if 'bubble' in targets:
+            online=bool(quota and time.time()-quota['observed']<=120)
+            self.bubble.refresh_button.finish(success and online)
+            if success and not online:self.bubble.refresh_button.setToolTip('Token 已刷新，额度桥接暂不可用')
+        report=self.bubble.report
+        if report:
+            report.set_snapshot(self.bubble.selected_snapshot())
+            if 'report' in targets:report.finish_refresh(success)
+
+    def refresh_all(self):
+        if self.bubble.card_source=='antigravity':self.request_antigravity_data('bubble')
+        else:super().refresh_all()
+
+    def refresh_report(self):
+        if self.bubble.card_source=='antigravity':self.request_antigravity_data('report')
+        else:super().refresh_report()
     def complete_animation(self,event):
         if self.reactions.queue_completion(event,time.monotonic()):self.pending_completion=event
     def update_connection_health(self,values):
@@ -806,6 +942,15 @@ class DesktopPet(EnhancedPet):
         scale_anchor=self._preview_character_rect or self.geometry()
         if scale_change:self._surface_preview=None;self._preview_character_rect=None
         self.settings=candidate
+        self.bubble.antigravity_quota_group=self.settings['antigravity_quota_group']
+        if self.settings['antigravity_quota_group']!=previous.get('antigravity_quota_group'):
+            self._refresh_tray_icon()
+        source_change=any(candidate.get(key)!=previous.get(key) for key in ('card_source','antigravity_enabled'))
+        if source_change:
+            if self.bubble.report:
+                if self.bubble.report.requested:self.bubble.report.dismiss()
+                self.bubble.report.set_refresh_busy(False)
+            self.configure_assistant_source()
         if self.enhanced_ready:self.quiet_background_speech()
         from settings_controls import set_motion_mode,settle_motion
         set_motion_mode(self.settings['ui_animation_mode'])
@@ -858,7 +1003,9 @@ class DesktopPet(EnhancedPet):
             try:
                 if self.save_settings() is False:raise OSError('原设置无法读取，本次未写入。恢复文件后请重启桌宠。')
             except (OSError,ValueError):
-                self.settings=previous;self._card_anchor=copy.deepcopy(previous.get('card_anchor'));self.apply_settings({},save=False);raise
+                self.settings=previous;self._card_anchor=copy.deepcopy(previous.get('card_anchor'))
+                if source_change:self.configure_assistant_source()
+                self.apply_settings({},save=False);raise
         if changing_theme:self._theme_preview=None;self._theme_preview_pending=False
         changed={key:copy.deepcopy(value) for key,value in self.settings.items() if previous.get(key)!=value}
         if changed:
@@ -869,6 +1016,14 @@ class DesktopPet(EnhancedPet):
 
     def flush_status(self):
         super().flush_status();self.bubble.evaluate_mode()
+        if self.activity and self.bubble.antigravity_enabled:
+            from antigravity import SOURCE,source_of
+            roster=self.bubble.roster
+            active=self.antigravity_bridge.tasks.active if self.antigravity_bridge else {}
+            visible=[sid for sid in roster.pinned if source_of(sid)==SOURCE]
+            unread=[sid for sid,_ in reversed(self.bubble.status_indicator.unread) if source_of(sid)==SOURCE]
+            self.activity.set_antigravity_context(dict.fromkeys((*active,*visible,*unread)),
+                                                  {sid:event['turn'] for sid,event in active.items()})
 
     def desired_decode_size(self):
         from decode_runtime import display_decode_size
@@ -1209,10 +1364,14 @@ class DesktopPet(EnhancedPet):
             from daily_report import DailyReport
             self.bubble.report=DailyReport(self.bubble)
             self.bubble.report.refreshRequested.connect(self.refresh_report)
-        self.bubble.report.set_snapshot(self.bubble.token_snapshot)
+        snapshot=self.bubble.selected_snapshot()
+        if self.bubble.card_source=='antigravity' and snapshot is None:snapshot={'provider':'antigravity'}
+        self.bubble.report.set_snapshot(snapshot)
         self.bubble.report.open()
+        if self.bubble.card_source=='antigravity':self.request_antigravity_data()
 
     def open_quota_comparison(self):
+        if self.bubble.card_source=='antigravity':return
         if self.bubble.report is not None and self.bubble.report.requested and self.bubble.report.page=='cycle':
             self.bubble.report.dismiss();return
         if self.bubble.report is None:
@@ -1252,6 +1411,7 @@ class DesktopPet(EnhancedPet):
                 if not QDesktopServices.openUrl(QUrl(url)):raise OSError('未能打开默认浏览器，请检查系统的浏览器设置。')
             except (ValueError,OSError) as error:self.say(str(error),6000)
         elif action=='codex':self.open_assistant()
+        elif action=='antigravity':self.open_antigravity()
         elif action=='chat':self.open_chat()
         elif action=='settings':self.open_settings()
         elif action=='report':self.open_report()
@@ -1260,9 +1420,19 @@ class DesktopPet(EnhancedPet):
         try:self.codex_navigation.open()
         except OSError as error:self.say(str(error),6000)
     def open_conversation(self,session):
+        from antigravity import SOURCE,source_of
+        if source_of(session)==SOURCE:
+            self.open_antigravity();self.say('已请求打开 Antigravity，请在应用中选择会话。',3500);return
         self.recently_visited=getattr(self,'recently_visited',{});self.recently_visited[session]=time.monotonic()
         try:self.codex_navigation.open(session)
         except OSError as error:self.say(str(error),6000)
+    def open_antigravity(self):
+        from antigravity import open_app
+        from codex_navigation import CodexNavigation
+        if not hasattr(self,'antigravity_navigation'):
+            self.antigravity_navigation=CodexNavigation(open_app,self)
+            self.antigravity_navigation.error.connect(lambda text:self.say(text,6000))
+        self.antigravity_navigation.open()
     def open_data(self):
         try:
             STATE_DIR.mkdir(parents=True,exist_ok=True)
@@ -1565,12 +1735,19 @@ class DesktopPet(EnhancedPet):
         if METRICS.enabled:value['performance']=METRICS.snapshot()
         if self.activity:
             self.recently_visited={sid:t for sid,t in getattr(self,'recently_visited',{}).items() if time.monotonic()-t<120}
-            self.activity.set_context(self.bubble.roster.pinned,self.recently_visited)
+            from antigravity import source_of
+            self.activity.set_context([sid for sid in self.bubble.roster.pinned if source_of(sid)=='codex'],self.recently_visited)
         if self.settings_dialog and self.settings_dialog.isVisible():self.connectionHealthChanged.emit(value['connection_health'])
         atomic_json(path,value)
     def closeEvent(self,event):
         if getattr(self,'_cleanup_job',None):
             self._cleanup_exit_pending=True;event.ignore();return
+        if self.antigravity_data and self.antigravity_data.isRunning():
+            self.antigravity_data.requestInterruption()
+            if not getattr(self,'_antigravity_data_exit_pending',False):
+                self._antigravity_data_exit_pending=True;self.antigravity_data.finished.connect(self.close)
+            event.ignore();return
+        self.antigravity_timer.stop()
         if hasattr(self,'materials') and not self.materials.shutdown():
             if not self._material_exit_pending:self._material_exit_pending=True;self.materials.idle.connect(self.close)
             event.ignore();return
@@ -1583,6 +1760,11 @@ class DesktopPet(EnhancedPet):
             if not getattr(self,'_connection_exit_pending',False):
                 self._connection_exit_pending=True;self.settings_dialog.connection_job.finished.connect(self.close)
             event.ignore();return
+        hook_job=getattr(self.settings_dialog,'antigravity_job',None)
+        if hook_job is not None and hook_job.isRunning():
+            if not getattr(self,'_antigravity_exit_pending',False):
+                self._antigravity_exit_pending=True;hook_job.finished.connect(self.close)
+            event.ignore();return
         if self.settings_dialog and self.settings_dialog.job and self.settings_dialog.job.isRunning():
             self.say('素材导入仍在进行，请完成后退出。',5000);event.ignore();return
         if hasattr(self,'updates') and not self.updates.shutdown():
@@ -1591,6 +1773,9 @@ class DesktopPet(EnhancedPet):
         self._codex_closing=True;self.codex_timer.stop();self.click_timer.stop();self.last_click=None
         self.surface_policy.shutdown()
         self.edge_dock.shutdown();self.cancel_pointer();self.sustained.cancel();self.locomotion.cancel();self.codex_navigation.close()
+        if hasattr(self,'antigravity_navigation'):self.antigravity_navigation.close()
+        if self.antigravity_bridge:
+            self.antigravity_bridge.event.disconnect(self.on_activity);self.antigravity_bridge.close()
         if self.bubble.report:self.bubble.report.animation.stop();self.bubble.report.hide()
         if self.chat_window:self.chat_window.shutdown()
         if self.settings_dialog:self.settings_dialog.hide()

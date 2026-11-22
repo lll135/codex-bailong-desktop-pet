@@ -121,16 +121,27 @@ class DetailsTabs(QTabWidget):
         set_theme_style(help_button,'QToolButton{color:#706879;border:0;background:transparent;border-radius:6px;}QToolButton:hover{background:#eee7f5;}QToolButton:checked{background:#eae2f2;}')
         help_button.clicked.connect(bubble.show_explanations)
         help_button.move(max(0,self.width()-22),0)
-        items=quota_items(bubble.windows)
+        agy=bubble.card_source=='antigravity'
+        windows,caption=bubble.selected_quota_data()
+        self.tabBar().setTabVisible(2,not agy)
+        if agy and bubble.antigravity_quota and bubble.antigravity_quota['pools']:
+            from choice_controls import ChoiceCombo
+            pools=list(bubble.antigravity_quota['pools'])
+            selection=ChoiceCombo();selection.setAccessibleName('Antigravity 额度模型组')
+            selection.addItems(pools)
+            selection.setCurrentIndex(pools.index(bubble.antigravity_quota_group) if bubble.antigravity_quota_group in pools else 0)
+            selection.currentTextChanged.connect(bubble.quotaGroupRequested.emit)
+            quota.addWidget(selection)
+        items=quota_items(windows)
         for item in items:
             title={'一周':'本周窗口','5小时':'5 小时窗口'}.get(item['name'],item['name']+'窗口')
             stamp=item['reset_at'];sub=('重置时间已到 / 等待刷新' if item['expired'] else datetime.fromtimestamp(stamp,BEIJING).strftime('%m月%d日 %H:%M')+' 重置 / 北京时间') if stamp else '重置时间未提供'
-            source=next((window for window in (bubble.windows or []) if isinstance(window,dict) and window.get('name')==item['name']),{})
+            source=next((window for window in windows if isinstance(window,dict) and window.get('name')==item['name']),{})
             plan=source.get('plan');plan=plan.strip().upper()[:30] if isinstance(plan,str) else ''
             quota.addWidget(DetailRow(title,sub,item['display'],plan))
-        caption=bubble.quota_caption or ('账户额度尚未提供，未知不代表 0%。' if not bubble.windows else '')
+        caption=caption or ('账户额度尚未提供，未知不代表 0%。' if not windows else '')
         if caption:quota.addWidget(detail_label(caption,10,True))
-        snapshot=bubble.token_snapshot
+        snapshot=bubble.selected_snapshot()
         if not snapshot:tokens.addWidget(detail_label('Token 用量正在统计中…',11,True))
         elif snapshot.get('unavailable'):tokens.addWidget(detail_label('统计暂不可用，请点击顶部刷新重试。',11,True))
         else:
@@ -140,8 +151,10 @@ class DetailsTabs(QTabWidget):
             if known:value.setAccessibleDescription(f'本机累计 {total:,} Token')
             row.addWidget(value);tokens.addWidget(stat)
             if snapshot.get('partial'):tokens.addWidget(detail_label('部分日志暂不可读，统计可能不完整。',10,True))
-        tokens.addWidget(detail_label('柱显示用量，线显示回合均速。\n均速包含思考、工具和等待，不代表纯生成速度。',10,True))
-        tokens.addWidget(detail_label('输入包含缓存，输出包含推理，不重复相加。',10,True))
+        if agy:tokens.addWidget(detail_label('本机 Antigravity 请求记录，合计未缓存输入、缓存读写与输出。',10,True))
+        else:
+            tokens.addWidget(detail_label('柱显示用量，线显示回合均速。\n均速包含思考、工具和等待，不代表纯生成速度。',10,True))
+            tokens.addWidget(detail_label('输入包含缓存，输出包含推理，不重复相加。',10,True))
         pending=pending_reset(bubble.reset_snapshot)
         from reset_presentation import reset_view
         view=reset_view(bubble.reset_snapshot,getattr(bubble,'reset_error_details',None) or bubble.reset_feed_error)

@@ -242,7 +242,7 @@ class ComboChart:
         self._inspect_leave.timeout.connect(self.check_inspection_pointer);self._pointer_inspection=False;self._hold_hover_layout=False
         self.reveal.animation.finished.connect(self.show_inspection_after_reveal)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-    def combo_layers(self,p,dynamic,bins,rate_items,plot,available=True,by_model=False,output_rates=None,model_order=None,rate_label='回合均速',cost_buckets=None):
+    def combo_layers(self,p,dynamic,bins,rate_items,plot,available=True,by_model=False,output_rates=None,model_order=None,rate_label='回合均速',cost_buckets=None,show_rates=True):
         theme,bar,line=colors();bottom=plot.bottom();n=max(1,len(bins));slot=plot.width()/n
         trace_items=rate_items if output_rates is None else output_rates
         totals={}
@@ -284,7 +284,7 @@ class ComboChart:
                 column=QRectF(rect.left()+slot*.17,bottom-height,max(.25,slot*.66),height)
                 bars.append((column,segments))
             value=(trace_item or {}).get('rate') if not b.get('future') else None
-            if available and not b.get('future'):
+            if show_rates and available and not b.get('future'):
                 floor_points.append(QPointF(x,bottom-plot.height()*(value if value is not None else 0)/maximum));known.append(value is not None)
             if value is not None:
                 point=QPointF(x,bottom-plot.height()*value/maximum);self._rate_points.append((i,point))

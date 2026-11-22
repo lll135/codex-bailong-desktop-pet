@@ -28,6 +28,28 @@ class ConnectionJob(QThread):
         try:self.report.emit(check_connection(cancel=self.cancel))
         except Exception:self.report.emit(dict(summary='连接检查暂不可用，请稍后重试。'))
 
+
+class AntigravityHookJob(QThread):
+    report=Signal(str)
+    def __init__(self,enabled,parent=None,*,quota=False):
+        super().__init__(parent);self.enabled=enabled;self.quota=quota
+    def run(self):
+        from pathlib import Path
+        from antigravity import executable,configure_hooks
+        from enhanced import STATE_DIR
+        try:
+            if self.enabled and executable() is None:raise OSError('未找到 Antigravity 桌面 App。')
+            if self.quota:
+                from antigravity_sidecar import install
+                install(Path.home())
+                self.report.emit('白龙额度桥接已配置。Antigravity 加载 Sidecar 后可从卡片刷新额度。')
+                return
+            configure_hooks(Path.home(),STATE_DIR,self.enabled)
+            if self.enabled:self.report.emit('白龙 Hook 已配置。保存上方开关后，在 Antigravity 发起一轮任务验证连接。')
+            else:self.report.emit('白龙 Hook 已停用。可关闭并保存上方监听开关。')
+        except (OSError,ValueError,RecursionError) as error:
+            self.report.emit('Hook 配置失败：'+str(error))
+
 class LibraryJob(QThread):
     result=Signal(object);failed=Signal(str)
     def __init__(self,source,destination=None,parent=None):super().__init__(parent);self.source=source;self.destination=destination
@@ -60,6 +82,7 @@ class PathsJob(QThread):
 class SettingsDialog(QDialog):
     def __init__(self,pet,embedded=False,lazy=False):
         super().__init__(pet,Qt.WindowType.Widget if embedded else Qt.WindowType.Dialog);self.pet=pet;self.embedded=embedded;self.fields={};self.job=None;self.connection_job=None
+        self.antigravity_job=None
         self.field_tabs={};self.field_titles={};self.factors={};self._writing_widgets=True;self.draft=None;self.path_job=None;self._saving=False;self._visit_active=False
         self._size_preview_timer=QTimer(self);self._size_preview_timer.setSingleShot(True)
         self._size_preview_timer.setInterval(16);self._size_preview_timer.timeout.connect(self.preview_size_draft)
@@ -268,6 +291,20 @@ class SettingsDialog(QDialog):
     def build_page_2(self):
         pet=self.pet
         connection=self.tab('Codex 联动')
+        if sys.platform=='win32':
+            self.section(connection,'Antigravity',None)
+            self.check(connection,'antigravity_enabled','监听 Antigravity 桌面 App')
+            self.antigravity_hook_button=QPushButton('配置 Antigravity 状态桥接')
+            self.antigravity_hook_button.clicked.connect(lambda:self.configure_antigravity_hooks(True))
+            self.antigravity_stop_button=QPushButton('停用 Hook')
+            self.antigravity_stop_button.clicked.connect(lambda:self.configure_antigravity_hooks(False))
+            controls=QHBoxLayout();controls.addWidget(self.antigravity_hook_button,1);controls.addWidget(self.antigravity_stop_button)
+            connection.addRow(controls)
+            self.antigravity_quota_button=QPushButton('配置 Antigravity 额度桥接')
+            self.antigravity_quota_button.clicked.connect(lambda:self.configure_antigravity_hooks(True,quota=True))
+            connection.addRow(self.antigravity_quota_button)
+            self.antigravity_hook_status=QLabel('配置后可从卡片左上角切换来源。')
+            self.antigravity_hook_status.setWordWrap(True);connection.addRow(self.antigravity_hook_status)
         self.section(connection,'启动与退出',None)
         self.startup=SettingsSwitchRow('登录 Windows 时启动');connection.addRow(self.startup)
         self.field_tabs['startup']=self._building_index;self.field_titles['startup']='开机启动'
@@ -327,6 +364,23 @@ class SettingsDialog(QDialog):
         self.connection_text.setPlainText('点击“检测连接与额度”生成只读报告；不会发送对话或消耗 Token。');paths.addRow(self.connection_text)
         self.paths_card=AnimatedDisclosure(path_body);connection.addRow(self.paths_card);self.path_toggle.toggled.connect(self.paths_card.set_expanded)
         self.path_source.currentIndexChanged.connect(self.path_source_changed);self.path_source_changed()
+
+    def configure_antigravity_hooks(self,enabled,*,quota=False):
+        if self.antigravity_job is not None:return
+        self.antigravity_hook_button.setEnabled(False)
+        self.antigravity_stop_button.setEnabled(False)
+        self.antigravity_quota_button.setEnabled(False)
+        self.antigravity_hook_status.setText('正在配置 Antigravity 桥接…')
+        job=AntigravityHookJob(enabled,self,quota=quota);self.antigravity_job=job
+        job.report.connect(self.antigravity_hook_status.setText)
+        job.finished.connect(self.antigravity_hooks_finished)
+        job.finished.connect(job.deleteLater);job.start()
+
+    def antigravity_hooks_finished(self):
+        self.antigravity_job=None
+        self.antigravity_hook_button.setEnabled(True)
+        self.antigravity_stop_button.setEnabled(True)
+        self.antigravity_quota_button.setEnabled(True)
 
     def open_pricing(self):
         from pricing_ui import open_editor

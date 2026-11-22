@@ -11,6 +11,24 @@ from sustained_assets import seam_items
 DEST=ROOT/'build/materials/light'
 RECIPE='512-lanczos-exact-independent-m4q80-v1'
 
+def verify_existing_light(source,root=ROOT):
+    """Verify a local program build can reuse the published light files."""
+    from animation_updates import validate_catalog
+    from material_store import checked
+    catalog=json.loads((root/'app/material_catalog.json').read_text(encoding='utf-8'))
+    validate_catalog(catalog,catalog.get('releaseVersion'))
+    manifest=root/'outputs/白龙桌宠素材/素材清单.json'
+    items=json.loads(manifest.read_text(encoding='utf-8'))
+    names={item.get('playbackFile') or item['file'] for item in all_items(items)+seam_items(items)}
+    records={item['path']:item for item in catalog['tiers']['light']['files']}
+    if set(records)!=names|{manifest.name} or digest(manifest)!=records[manifest.name]['sha256']:
+        raise ValueError('源码动画清单与发布素材不一致，请从原素材重新构建')
+    for name,record in records.items():
+        candidate=checked(source,name)
+        if candidate.stat().st_size!=record['bytes'] or digest(candidate)!=record['sha256']:
+            raise ValueError('复用素材未通过校验：'+name)
+    return catalog
+
 def convert(record):
     source=CACHE/(record['id']+'.webp');target=DEST/record['source'];receipt=ROOT/'build/materials/receipts'/(record['id']+'.json')
     try:

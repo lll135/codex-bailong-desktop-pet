@@ -4,7 +4,9 @@ from pathlib import Path
 from contextlib import closing
 
 def session_id(value):
-    text=str(value);match=re.search(r'([0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12})$',text)
+    text=str(value)
+    if text.startswith('antigravity:'):return text
+    match=re.search(r'([0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12})$',text)
     return match.group(1).lower() if match else text
 
 def rollout_alias(path):

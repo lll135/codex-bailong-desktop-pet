@@ -47,7 +47,7 @@ def validate_regression(regression,plan=None):
     known=expected_tests();plan=plan or dict(mode='release',modules=known,tls=True,native=True)
     modules=plan.get('modules',[])
     if (not regression.get('passed') or regression.get('expectedModules')!=known
-            or regression.get('sourceHashes')!=source_hashes()):raise ValueError('本轮检查未通过或源码已变化')
+            or regression.get('sourceHashes')!=source_hashes(plan.get('lightSource'))):raise ValueError('本轮检查未通过或源码已变化')
     if not modules or set(modules)-set(known):raise ValueError('构建缺少有效检查范围')
     if plan.get('mode')=='release':
         if regression.get('scope')!='full' or regression.get('modules')!=len(known) or sorted(modules)!=known:raise ValueError('发布前必须完成完整回归')
@@ -59,7 +59,7 @@ def validate_regression(regression,plan=None):
 def require_release_regression():
     validate_regression(read(ROOT/'本地实装/回归验收/current-regressions.json'))
 
-def source_hashes():
+def source_hashes(light_source=None):
     paths=list((ROOT/'app').glob('*.py'))
     paths += [ROOT/'app/tray_host.cs',ROOT/'build_tray_host.py']
     paths += [ROOT/name for name in ('build_local.py','quality_check.py','build_release.py','build_card_only.py','check_bundle.py','deploy_release.py','release_version.py','release_retention.py','asset_pack.py','build_materials.py','build_program_update.py','program_channel.py','package_trim.py','test_local_workflow.py','test_release_version.py','test_release_retention.py') if (ROOT/name).is_file()]
@@ -68,14 +68,19 @@ def source_hashes():
     paths += [p for p in (ROOT/'app/fonts').glob('*') if p.is_file()]
     paths += list((ROOT/'app/branding').glob('*.ico'))
     manifest=ROOT/'outputs/白龙桌宠素材/素材清单.json'
-    if manifest.is_file():
-        paths.append(manifest)
+    if manifest.is_file():paths.append(manifest)
+    if manifest.is_file() and light_source is None:
         from sustained_assets import seam_items
         for item in seam_items(read(manifest)):
             seam=(manifest.parent/item['playbackFile']).resolve()
             if not seam.is_relative_to(manifest.parent.resolve()):raise ValueError('持续动作接缝路径无效')
             paths.append(seam)
-    return {p.relative_to(ROOT).as_posix():sha(p) for p in paths}
+    hashes={p.relative_to(ROOT).as_posix():sha(p) for p in paths}
+    if light_source is not None:
+        from build_materials import verify_existing_light
+        catalog=verify_existing_light(Path(light_source),ROOT)
+        hashes.update({'light/'+r['path']:r['sha256'] for r in catalog['tiers']['light']['files']})
+    return hashes
 
 def verify_code(folder):
     from PyInstaller.archive.readers import CArchiveReader
@@ -183,11 +188,14 @@ def main(argv=None):
     args.add_argument('--release-check',action='store_true',help='Full regression, TLS and four-scale checks before publishing')
     args.add_argument('--native-check',action='store_true',help='Include native four-scale checks when affected')
     args.add_argument('--tls-check',action='store_true',help='Include frozen TLS checks when affected')
+    args.add_argument('--light-source',type=Path,help='Reuse verified light assets for a local program build')
     options=args.parse_args(argv)
     if options.build_only and options.deploy_verified:args.error('choose either --build-only or --deploy-verified')
+    if options.light_source is not None and (options.release_check or options.deploy_verified):args.error('--light-source is only for a new local build')
     if not options.deploy_verified:
         try:options.validation=validation_plan(options.tests,options.release_check,options.native_check,options.tls_check)
         except ValueError as error:args.error(str(error))
+        if options.light_source is not None:options.validation['lightSource']=str(options.light_source.absolute())
     from PySide6.QtCore import QLockFile
     (ROOT/'build').mkdir(exist_ok=True);(ROOT/'本地实装').mkdir(exist_ok=True)
     lock=QLockFile(str(ROOT/'build/local-build.lock'))
@@ -205,6 +213,7 @@ def main(argv=None):
             with (ROOT/'本地实装/回归检查.log').open('w',encoding='utf-8') as log:
                 command=[sys.executable,str(ROOT/'quality_check.py'),'current']
                 if not options.release_check:command+=options.validation['modules']
+                if options.light_source is not None:command+=['--light-source',options.validation['lightSource']]
                 subprocess.run(command,cwd=ROOT,stdout=log,stderr=subprocess.STDOUT,check=True)
             return build_and_deploy(options)
         return install_verified(proof,folder)
@@ -212,10 +221,12 @@ def main(argv=None):
 
 def build_and_deploy(options):
     safe_print('构建应用目录，不生成完整安装包…',flush=True)
-    with (ROOT/'本地实装/应用构建.log').open('w',encoding='utf-8') as log:
-        subprocess.run([sys.executable,str(ROOT/'build_release.py')],cwd=ROOT,stdout=log,stderr=subprocess.STDOUT,check=True)
-    folder=ROOT/'release/BailongEnhanced'
     plan=options.validation
+    command=[sys.executable,str(ROOT/'build_release.py')]
+    if 'lightSource' in plan:command+=['--light-source',plan['lightSource']]
+    with (ROOT/'本地实装/应用构建.log').open('w',encoding='utf-8') as log:
+        subprocess.run(command,cwd=ROOT,stdout=log,stderr=subprocess.STDOUT,check=True)
+    folder=ROOT/'release/BailongEnhanced'
     code=verify_code(folder)
     tls=verify_tls_runtime(folder/'BailongEnhanced.exe') if plan['tls'] else dict(skipped=True,reason='本轮未涉及TLS')
     probes=native_matrix(folder/'BailongEnhanced.exe','构建') if plan['native'] else []

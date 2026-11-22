@@ -76,10 +76,12 @@ def build_windows_bundle(version):
     Path(str(archive)+'.sha256').write_text(full_sha+'  '+archive.name+'\n',encoding='utf-8')
     return archive
 
-def build(legacy_formats=False,application_only=True):
+def build(legacy_formats=False,application_only=True,light_source=None):
     validate_new_version(VERSION)
-    from build_materials import build as build_materials,DEST
-    catalog=build_materials()
+    from build_materials import build as build_materials,verify_existing_light,DEST
+    if light_source is not None and not application_only:raise ValueError('公开包需要从原素材构建')
+    catalog=verify_existing_light(light_source) if light_source is not None else build_materials()
+    playback_dir=light_source if light_source is not None else DEST
     from animation_updates import validate_program_catalog
     validate_program_catalog(catalog,VERSION)
     tls_data=ssl_runtime_data()
@@ -117,8 +119,8 @@ def build(legacy_formats=False,application_only=True):
         name=item.get('playbackFile') or item['file'];source=(asset_root/name).resolve();target=(asset_dest/name).resolve()
         if not source.is_relative_to(asset_root.resolve()) or not target.is_relative_to(asset_dest.resolve()):raise ValueError('素材打包路径无效')
         record=next(f for f in catalog['tiers']['light']['files'] if f['path']==name)
-        packed=DEST/name;assert record['sha256']==__import__('asset_pack').digest(packed)
-        target.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(packed,target)
+        target.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(playback_dir/name,target)
+        if record['sha256']!=__import__('asset_pack').digest(target):raise ValueError('包体素材校验失败：'+name)
     shutil.copy2(ROOT/'docs/archive/状态响应优化/更新说明.txt',release/'持续状态响应说明.txt')
     shutil.copy2(ROOT/'docs/archive/应用内更新/更新说明.txt',release/'应用内更新说明.txt')
     shutil.copy2(ROOT/'docs/archive/持续状态动画/更新说明.txt',release/'连续状态动画说明.txt')
@@ -218,9 +220,11 @@ def build(legacy_formats=False,application_only=True):
 if __name__=='__main__':
     parser=argparse.ArgumentParser();parser.add_argument('--legacy-formats',action='store_true',help='Also build portable and manual installer when explicitly needed')
     parser.add_argument('--package',action='store_true',help='Explicitly generate the full installer for a GitHub release')
+    parser.add_argument('--light-source',type=Path,help='Reuse verified published light assets for the local application')
     args=parser.parse_args()
     if args.legacy_formats and not args.package:parser.error('--legacy-formats also requires --package')
+    if args.light_source is not None and args.package:parser.error('--light-source is for local builds')
     if args.package:
         from build_local import require_release_regression
         require_release_regression()
-    build(args.legacy_formats,application_only=not args.package)
+    build(args.legacy_formats,application_only=not args.package,light_source=args.light_source)

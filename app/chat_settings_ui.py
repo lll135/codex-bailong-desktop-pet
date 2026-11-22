@@ -1,6 +1,6 @@
 """In-card chat settings, grouped by connection and conversation behavior."""
 from PySide6.QtCore import QSignalBlocker, Qt
-from PySide6.QtWidgets import QHBoxLayout,QLabel,QPlainTextEdit,QPushButton,QScrollArea,QVBoxLayout,QWidget
+from PySide6.QtWidgets import QHBoxLayout,QLabel,QLineEdit,QPlainTextEdit,QPushButton,QScrollArea,QVBoxLayout,QWidget
 
 from chat_config import CHAT_DEFAULT,load_chat_config,save_chat_preferences
 from chat_window import ChatNotice,chat_symbol
@@ -52,7 +52,10 @@ class ChatSettingsPage(ChatSettingsPane):
     def __init__(self,chat):
         super().__init__(chat,'聊天设置',chat.return_to_chat)
         self.body.addWidget(heading('聊天服务'))
-        self.service=SlidingSegments([('ChatGPT 套餐','chatgpt'),('自定义 API','custom')],compact=True)
+        import sys
+        services=[('ChatGPT 套餐','chatgpt'),('自定义 API','custom')]
+        if sys.platform=='win32':services.append(('Antigravity','antigravity'))
+        self.service=SlidingSegments(services,compact=True)
         self.body.addWidget(self.service)
         self.service.currentIndexChanged.connect(lambda _:chat.choose_service(self.service.currentData()))
         self.connection=ChatNotice();self.body.addWidget(self.connection)
@@ -65,6 +68,17 @@ class ChatSettingsPage(ChatSettingsPane):
         self.models.currentIndexChanged.connect(self.choose_model)
         self.disconnect=QPushButton('断开本机授权');self.disconnect.clicked.connect(chat.disconnect_account);box.addWidget(self.disconnect)
         self.body.addWidget(self.account)
+        self.antigravity=QWidget();agy=QVBoxLayout(self.antigravity);agy.setContentsMargins(0,0,0,0);agy.setSpacing(6)
+        agy.addWidget(page_link('打开独立闲聊目录',chat.open_antigravity_workspace))
+        self.agy_project=QLineEdit();self.agy_project.setPlaceholderText('Antigravity 闲聊项目 ID')
+        self.agy_project.setAccessibleName('Antigravity 闲聊项目 ID');self.agy_project.setMaxLength(128)
+        if sys.platform=='win32':
+            from pathlib import Path
+            from antigravity_sidecar import configured_project
+            self.agy_project.setText(configured_project(Path.home()))
+        agy.addWidget(self.agy_project)
+        self.agy_configure=QPushButton('配置桌面 App 聊天');self.agy_configure.clicked.connect(lambda:chat.configure_antigravity_chat(self.agy_project.text()))
+        agy.addWidget(self.agy_configure);self.body.addWidget(self.antigravity)
         self.feedback=ChatNotice();self.body.addWidget(self.feedback)
         self.body.addSpacing(5)
         self.body.addWidget(heading('对话'))
@@ -84,6 +98,8 @@ class ChatSettingsPage(ChatSettingsPane):
         self.connection.setText(summary)
         self.custom.setVisible(source=='custom')
         self.account.setVisible(source=='chatgpt')
+        self.antigravity.setVisible(source=='antigravity')
+        self.agy_configure.setEnabled(not locked and not self.chat.busy)
         self.connect_button.setText('重新连接 ChatGPT' if connected else '连接 ChatGPT')
         self.connect_button.setVisible(not locked)
         self.cancel_button.setVisible(locked)

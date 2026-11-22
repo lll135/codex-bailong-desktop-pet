@@ -68,6 +68,9 @@ class ActivityThread(QThread):
         self.project_progress=None
         self.token_runs=RefreshRuns()
         self.last_presence_scan=0;self.presence_reader=None;self.desktop_open=None;self.last_read_scan=0;self.last_name_scan=-10;self.conversation_names={}
+        self.watch_antigravity=False
+        self.antigravity_sessions=()
+        self.antigravity_turns={}
         self.restored_turns=set()
         from session_read_state import ReadAcknowledgements
         self.read_acknowledgements=ReadAcknowledgements()
@@ -76,6 +79,7 @@ class ActivityThread(QThread):
         from activity_targets import ActivityTargets
         self.targets=ActivityTargets();self.context_lock=threading.Lock();self.displayed=();self.visited=();self.last_active_scan=-20
     def run(self):
+        from antigravity import source_of
         from codex_live_status import LiveStatusReader
         if self.wsl:
             from wsl_codex import LogOnlyLiveReader
@@ -87,6 +91,10 @@ class ActivityThread(QThread):
             lambda sid,status,turn:self.live_events.put(('terminal',sid,status,turn)))
         self.live_reader.start()
         while not self.stop.is_set():
+            if (not self.wsl or self.watch_antigravity) and time.monotonic()-self.last_presence_scan>=5:
+                self.last_presence_scan=time.monotonic()
+                if self.presence_reader is None or not self.presence_reader.is_alive():
+                    self.presence_reader=threading.Thread(target=self.read_presence,name='BailongDesktopPresence',daemon=True);self.presence_reader.start()
             if self.wsl:
                 from wsl_codex import running,unc_parts
                 if not running(unc_parts(self.tail.home)[0]):
@@ -96,15 +104,11 @@ class ActivityThread(QThread):
                     if self.token_wake.is_set() and (self.token_reader is None or not self.token_reader.is_alive()):
                         self.token_wake.clear();self.token_reader=threading.Thread(target=self.read_tokens,name='BailongWslUnavailable',daemon=True);self.token_reader.start()
                     self.stop.wait(1);continue
-            if time.monotonic()-self.last_presence_scan>=5:
-                self.last_presence_scan=time.monotonic()
-                if self.presence_reader is None or not self.presence_reader.is_alive():
-                    self.presence_reader=threading.Thread(target=self.read_presence,name='BailongCodexPresence',daemon=True);self.presence_reader.start()
             try:
                 from session_read_state import session_id,active_conversations,conversation_names,terminal_conversations
                 try:pending=json.loads((self.session_dir/'task-notifications.json').read_text(encoding='utf-8')).get('unread',[])
                 except (OSError,ValueError,AttributeError):pending=[]
-                pending=[k for k in pending if isinstance(k,list) and len(k)==2 and all(isinstance(v,str) for v in k)]
+                pending=[k for k in pending if isinstance(k,list) and len(k)==2 and all(isinstance(v,str) for v in k) and source_of(k[0])=='codex']
                 history_due=time.monotonic()-self.last_active_scan>=15
                 with self.context_lock:displayed=self.displayed;visited=self.visited
                 self.targets.sync(self.tail.reducer.sessions,pending,displayed,visited)
@@ -193,6 +197,9 @@ class ActivityThread(QThread):
         if self.live_reader:self.live_reader.join(2)
     def set_context(self,displayed,visited=()):
         with self.context_lock:self.displayed=tuple(displayed);self.visited=tuple(visited)
+    def set_antigravity_context(self,sessions,turns=None):
+        with self.context_lock:
+            self.antigravity_sessions=tuple(sessions);self.antigravity_turns=dict(turns or {})
     def set_week_cycle(self,cycle):
         with self.context_lock:
             if self.week_cycle==cycle:return
@@ -232,6 +239,15 @@ class ActivityThread(QThread):
         except Exception:value=None
         self.desktop_open=value
         if not self.stop.is_set():self.event.emit(dict(kind='codex_presence',open=value))
+        if self.watch_antigravity and not self.stop.is_set():
+            from antigravity import conversation_overview,desktop_open
+            self.event.emit(dict(kind='antigravity_presence',open=desktop_open()))
+            with self.context_lock:sessions,turns=self.antigravity_sessions,self.antigravity_turns
+            overview=conversation_overview(Path.home(),sessions)
+            if overview and not self.stop.is_set():
+                names={sid:entry['title'] for sid,entry in overview.items() if entry['title']}
+                if names:self.event.emit(dict(kind='conversation_names',names=names))
+                if turns:self.event.emit(dict(kind='antigravity_native',turns=turns,overview=overview))
     def read_tokens(self):
         run,_=self.token_runs.reserve()
         self.event.emit({'kind':'token_busy','busy':True,'run_id':run})
@@ -667,14 +683,19 @@ class EnhancedPet(Pet):
         when=time.strftime('%H:%M',time.localtime(self.quota_observed))
         self.bubble.quota_caption=caption or f'额度 · {source} {when}'+(' · 待刷新' if age>180 or expired else '')
         self.bubble.windows=self.quota_windows
-        self.bubble.redraw()
-        self.position_bubble()
+        if self.bubble.card_source=='codex':
+            self.bubble.redraw()
+            self.position_bubble()
         self._refresh_tray_icon()
 
     def _tray_window(self):
         """Return the same priority window used by the capsule quota ring."""
         from island_widgets import selected_quota, valid_percent
-        window=selected_quota(self.quota_windows or [])
+        if getattr(self.bubble,'card_source','codex')=='antigravity':
+            windows,_=self.bubble.selected_quota_data()
+            window=selected_quota(windows)
+            window['name']='Antigravity '+window['name'] if windows else 'Antigravity'
+        else:window=selected_quota(self.quota_windows or [])
         value=window.get('remaining')
         valid=valid_percent(value)
         rounded=round(float(value),1) if valid else None
@@ -724,7 +745,7 @@ class EnhancedPet(Pet):
         self._tray_quota_hint=self._tray_quota_text(window,value,valid)
         if self.tray.toolTip():self.tray.setToolTip('')
         if hasattr(self,'tray_hover'):
-            name={'一周':'周','5小时':'5小时'}.get(window.get('name'),'')
+            name=window['name']+' ' if window['name'].startswith('Antigravity') else {'一周':'周','5小时':'5小时'}.get(window['name'],'')
             amount=f'{value:g}%' if valid else ('待刷新' if window.get('pending') else '未知')
             title=f'{name}额度 {amount}'
             reset=local_time(window.get('resetsAt'))
@@ -758,7 +779,7 @@ class EnhancedPet(Pet):
         elif kind=='live_output_rate':
             self.bubble.live_output_rate=event['value']
             card=getattr(self.bubble,'live_rate_card',None)
-            if card is not None:
+            if card is not None and self.bubble.card_source=='codex':
                 from shiboken6 import isValid
                 if isValid(card):card.set_data(event['value'])
         elif kind=='token_usage':
@@ -775,7 +796,7 @@ class EnhancedPet(Pet):
                 snapshot=dict(self.bubble.token_snapshot,partial=True,refresh_failed=True)
             self.bubble.token_snapshot=snapshot
             if not self.bubble.refresh_token_snapshot():self.bubble.redraw();self.position_bubble()
-            if self.bubble.report:self.bubble.report.set_snapshot(self.bubble.token_snapshot)
+            if self.bubble.report and getattr(self.bubble,'card_source','codex')=='codex':self.bubble.report.set_snapshot(self.bubble.token_snapshot)
             self.refresh_flow.result('token',event.get('run_id'),not any(event['snapshot'].get(key) for key in ('unavailable','partial')))
         elif kind=='token_rate':
             if self.bubble.token_snapshot:
@@ -784,25 +805,26 @@ class EnhancedPet(Pet):
                 from token_charts import TokenPlot
                 for plot in self.bubble.findChildren(TokenPlot):
                     plot.set_data(self.bubble.token_snapshot,plot.period)
-                if self.bubble.report:self.bubble.report.set_snapshot(self.bubble.token_snapshot)
+                if self.bubble.report and getattr(self.bubble,'card_source','codex')=='codex':self.bubble.report.set_snapshot(self.bubble.token_snapshot)
         elif kind=='project_cost':
             if self.bubble.token_snapshot:
                 self.bubble.token_snapshot=dict(self.bubble.token_snapshot,projects=event['projects'])
                 from token_charts import TokenPlot
-                for plot in self.bubble.findChildren(TokenPlot):
-                    plot.set_data(self.bubble.token_snapshot,plot.period)
-                if self.bubble.report:self.bubble.report.set_snapshot(self.bubble.token_snapshot)
+                if self.bubble.card_source=='codex':
+                    for plot in self.bubble.findChildren(TokenPlot):
+                        plot.set_data(self.bubble.token_snapshot,plot.period)
+                    if self.bubble.report:self.bubble.report.set_snapshot(self.bubble.token_snapshot)
         elif kind=='project_range_error':
             if self.bubble.report:self.bubble.report.cost_range_failed(event['bounds'])
         elif kind=='token_usage_error':
             if self.bubble.token_snapshot:self.bubble.token_snapshot=dict(self.bubble.token_snapshot,partial=True,refresh_failed=True)
             else:self.bubble.token_snapshot=dict(month=time.strftime('%Y-%m'),days={},total=0,partial=True,unavailable=True)
             if not self.bubble.refresh_token_snapshot():self.bubble.redraw()
-            if self.bubble.report:self.bubble.report.set_snapshot(self.bubble.token_snapshot)
+            if self.bubble.report and getattr(self.bubble,'card_source','codex')=='codex':self.bubble.report.set_snapshot(self.bubble.token_snapshot)
             self.refresh_flow.result('token',event.get('run_id'),False)
         elif kind=='quota':self.update_quota(event['windows'],event['observed'],'session')
         elif kind=='status':
-            self.bubble.status_indicator.observe(event)
+            if not self.bubble.antigravity_enabled:self.bubble.status_indicator.observe(event)
             self.last_activity=event
             self.last_status=time.monotonic()
             self.pending_activity=event
@@ -817,7 +839,7 @@ class EnhancedPet(Pet):
             self.refresh_quota()
         elif kind=='monitor_error':
             self.last_activity={'state':'offline','text':event['text'],'active':0}
-            self.bubble.status_indicator.observe(self.last_activity)
+            if not self.bubble.antigravity_enabled:self.bubble.status_indicator.observe(self.last_activity)
 
     def restore_status(self):
         event=self.last_activity

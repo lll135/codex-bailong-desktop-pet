@@ -27,7 +27,7 @@ def _validated(value):
     if not isinstance(result['providers'],list):raise _invalid()
     for name in ('active','system_prompt','chatgpt_model'):
         if not isinstance(result[name],str):raise _invalid()
-    if result['service'] not in ('custom','chatgpt'):raise _invalid()
+    if result['service'] not in ('custom','chatgpt','antigravity'):raise _invalid()
     for name,low,high in (('history_messages',2,200),('history_chars',1000,200000)):
         number=result[name]
         if type(number) is not int or not low<=number<=high:raise _invalid()

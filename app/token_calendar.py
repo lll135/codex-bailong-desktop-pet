@@ -209,22 +209,27 @@ class TokenUsageIndex:
             return snapshot(db,time.time(),progress,self.project_files,self.home,calendar_range)
 
     def snapshot(self,db,now=None,errors=0,model_rows=None):
-        now=time.time() if now is None else now;start,end=month_bounds(now)
-        days={f'{start:%Y-%m}-{day:02}':0 for day in range(1,calendar.monthrange(start.year,start.month)[1]+1)}
-        from token_analytics import hourly_usage,report_snapshot
-        report=report_snapshot(db,now,model_rows)
-        history={}
-        for row in report['daily_models']:
-            day=row['day'];history[day]=history.get(day,0)+row['total']
-        for day,value in history.items():
-            if day in days:days[day]=value
-        current=datetime.fromtimestamp(now);midnight=current.replace(hour=0,minute=0,second=0,microsecond=0)
-        hours,hour_models=hourly_usage(db,midnight.timestamp(),now,include_end=True)
-        return {'_usage_rowid':db.execute('SELECT COALESCE(MAX(rowid),0) FROM usage').fetchone()[0],
-                'report':report,'month':start.strftime('%Y-%m'),'days':days,'total':sum(days.values()),
-                'history_days':history,'history_start':min(history,default=None),'all_total':sum(history.values()),
-                'today':current.strftime('%Y-%m-%d'),'hours':hours,'hour_models':hour_models,
-                'checked':now,'partial':bool(errors),'source':'本机 Codex 日志'}
+        result=usage_snapshot(db,now,errors,model_rows)
+        result['_usage_rowid']=db.execute('SELECT COALESCE(MAX(rowid),0) FROM usage').fetchone()[0]
+        return result
+
+
+def usage_snapshot(db,now=None,errors=0,model_rows=None,*,source='本机 Codex 日志',count_messages=True):
+    now=time.time() if now is None else now;start,_=month_bounds(now)
+    days={f'{start:%Y-%m}-{day:02}':0 for day in range(1,calendar.monthrange(start.year,start.month)[1]+1)}
+    from token_analytics import hourly_usage,report_snapshot
+    report=report_snapshot(db,now,model_rows,count_messages=count_messages)
+    history={}
+    for row in report['daily_models']:
+        day=row['day'];history[day]=history.get(day,0)+row['total']
+    for day,value in history.items():
+        if day in days:days[day]=value
+    current=datetime.fromtimestamp(now);midnight=current.replace(hour=0,minute=0,second=0,microsecond=0)
+    hours,hour_models=hourly_usage(db,midnight.timestamp(),now,include_end=True)
+    return {'report':report,'month':start.strftime('%Y-%m'),'days':days,'total':sum(days.values()),
+            'history_days':history,'history_start':min(history,default=None),'all_total':sum(history.values()),
+            'today':current.strftime('%Y-%m-%d'),'hours':hours,'hour_models':hour_models,
+            'checked':now,'partial':bool(errors),'source':source}
 
 
 TOKEN_RANGES=('all','30d','7d','day')

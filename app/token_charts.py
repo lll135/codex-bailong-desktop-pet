@@ -46,9 +46,11 @@ class TokenPlot(QWidget,RasterChart,ComboChart):
         if self.snapshot.get('checked'):description+='截至'+datetime.fromtimestamp(self.snapshot['checked']).strftime('%m-%d %H:%M')+'。'
         if not s['available']:description+='统计中或暂不可用。'
         if self.snapshot.get('partial'):description+='部分日志暂不可读。'
-        self.setAccessibleName('Codex Token '+('小时曲线' if s['mode']=='line' else '用量柱状图'))
+        agy=self.snapshot.get('provider')=='antigravity'
+        name=('小时用量' if agy else '小时曲线') if s['mode']=='line' else '用量柱状图'
+        self.setAccessibleName(('Antigravity' if agy else 'Codex')+' Token '+name)
         rate_description=' 曲线按小时显示采样期间的输出速率。' if period=='day' else ' 回合均速包含思考、工具和等待时间。'
-        self.setAccessibleDescription(description+rate_description);self.setToolTip('')
+        self.setAccessibleDescription(description+('' if agy else rate_description));self.setToolTip('')
         if not unchanged:self.resume_inspection(held);self.update()
 
     def chart_rect(self):
@@ -69,9 +71,11 @@ class TokenPlot(QWidget,RasterChart,ComboChart):
             items=daily_rates(bins,rates.get('days') or {})
             left,right=s['start'][5:].replace('-','/'),s['end'][5:].replace('-','/')
         hourly=s['mode']=='line'
+        agy=self.snapshot.get('provider')=='antigravity'
         self.combo_layers(p,dynamic,bins,items,plot,s['available'],by_model=hourly or self.period=='7d',
-                          output_rates=(rates.get('today_output') or []) if hourly else None,
-                          cost_buckets=chart_cost_buckets(bins,self.snapshot.get('projects'),day=s['start'] if hourly else None))
+                          output_rates=(rates.get('today_output') or []) if hourly and not agy else None,
+                          cost_buckets=chart_cost_buckets(bins,self.snapshot.get('projects'),day=s['start'] if hourly else None) if not agy else None,
+                          show_rates=not agy)
         self.hits=[(record['rect'],b) for record,b in zip(self._combo_records,bins)]
         self.points=[QPointF(record['rect'].center().x(),plot.bottom()) for record,b in zip(self._combo_records,bins) if not b.get('future') and s['available']]
         p.setFont(font(10 if getattr(self,'expanded',False) else 11));p.setPen(theme_color(MUTED));top=self.height()-QFontMetrics(p.font()).height()-2

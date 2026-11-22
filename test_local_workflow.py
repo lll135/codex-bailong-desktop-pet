@@ -6,6 +6,25 @@ from unittest.mock import patch,Mock
 import build_local as local
 
 class LocalWorkflowTests(unittest.TestCase):
+    def test_reused_light_matches_catalog_and_rejects_changed_bytes(self):
+        from build_materials import verify_existing_light
+        catalog_path=Path(__file__).resolve().parent/'app/material_catalog.json'
+        catalog=json.loads(catalog_path.read_text(encoding='utf-8'))
+        manifest=self.root/'outputs/白龙桌宠素材/素材清单.json'
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text(json.dumps({'idle':{'file':'idle.webp'}}),encoding='utf-8')
+        light=self.root/'verified-light';light.mkdir()
+        (light/manifest.name).write_bytes(manifest.read_bytes())
+        idle=light/'idle.webp';idle.write_bytes(b'verified')
+        records=[dict(path=p.name,bytes=p.stat().st_size,sha256=local.sha(p)) for p in (idle,light/manifest.name)]
+        identity=hashlib.sha256(json.dumps(sorted(records,key=lambda r:r['path']),sort_keys=True,ensure_ascii=False).encode()).hexdigest()[:24]
+        catalog['tiers']['light'].update(id=identity,files=records,bytes=sum(r['bytes'] for r in records))
+        (self.root/'app/material_catalog.json').write_text(json.dumps(catalog,ensure_ascii=False),encoding='utf-8')
+        self.assertEqual(verify_existing_light(light,self.root),catalog)
+        self.assertEqual(local.source_hashes(light)['light/idle.webp'],local.sha(idle))
+        idle.write_bytes(b'tampered')
+        with self.assertRaisesRegex(ValueError,'idle.webp'):local.source_hashes(light)
+
     def test_versioned_material_catalog_preserves_verified_release_urls(self):
         from build_materials import retain_publication_catalog
         from animation_updates import validate_catalog

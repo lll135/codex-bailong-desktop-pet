@@ -19,7 +19,8 @@ DEFAULTS=dict(schema=2,ui_animation_mode='quality',theme='bailong',theme_accent=
     status_actions=True,status_action_interval=12.,status_response_revision=2,update_checks=True,token_chart_range='all',bubble_mode='auto',
     capsule_action='chatgpt',capsule_website='',talk_min=30.0,talk_max=90.0,talk_quiet=True,
     talk_lines=['忙完记得休息一下。','我在这里陪着你。','今天也一起把小事做好吧。'],
-    facing=1,character='builtin',character_preferences={},chat_follow=False)
+    facing=1,character='builtin',character_preferences={},chat_follow=False,
+    antigravity_enabled=False,card_source='codex',antigravity_quota_group='')
 
 def atomic_json(path,value):
     import uuid
@@ -95,6 +96,8 @@ def normalized(raw):
     # Keep the pre-mode key as a compatibility mirror for older diagnostics.
     out['video_fullscreen_yield']=out['fullscreen_yield_mode']=='video'
     if out['bubble_mode'] not in ('auto','mini','minimal'):out['bubble_mode']='auto'
+    if out['card_source'] not in ('codex','antigravity'):out['card_source']='codex'
+    if not isinstance(out['antigravity_quota_group'],str):out['antigravity_quota_group']=''
     from quick_actions import action_info
     out['capsule_action']=action_info(out['capsule_action'])[0]
     out['capsule_website']=str(out['capsule_website'] or '')[:2048]
