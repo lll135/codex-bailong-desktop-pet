@@ -1,6 +1,65 @@
-当前公开候选 v1.9.0。累计改动见 docs/releases/v1.9.0.md。
+# 白龙桌宠开发交接
 
-本机实装 v1.10.2，已确认程序运行、原有设置保留并备份、v1.10.1 可作为回退版本。证据见 [实装验收](本地实装/最终验收.json) 和 [Antigravity 联动验收](本地实装/Antigravity联动验收.json)。
+## 换电脑继续
+
+从 `lll135/codex-bailong-desktop-pet` 的 `codex/antigravity-desktop` 分支继续。`e3fce71` 是本次交接前的源码提交，包含 Antigravity 联动、来源切换，以及最近两项界面修复。
+
+```powershell
+git clone --branch codex/antigravity-desktop https://github.com/lll135/codex-bailong-desktop-pet.git
+cd codex-bailong-desktop-pet
+git status --short --branch
+```
+
+如另一台电脑已经有检出，先检查工作区，再 `git fetch origin` 并切换到跟踪 `origin/codex/antigravity-desktop` 的本地分支。开工读 [AGENTS.md](AGENTS.md)、[开发与构建](docs/DEVELOPMENT.md) 和 [维护与防错规范](维护与防错规范.md)。同级 DSH 工程单独维护。
+
+## 版本和验收
+
+- 仓库记录的 Windows 公开稳定版为 [v1.9.0](docs/releases/v1.9.0.md)。这次交接以源码分支为交付物。公开版本和本地实装分别按 AGENTS.md 升位。
+- 原电脑实装 v1.10.2，v1.10.1 可回退。v1.10.2 含 Antigravity 联动、主题色箭头和统一双来源标题。最后一次本地验收通过 69 项定向回归，并验证了实装启动、设定保留和回退包。
+- 分支后续已修「运行／运行与连接」菜单名称，以及普通卡片的额度百分比和重置图标重叠。设置检查 26 项、额度检查 46 项通过，额度问题在 150% 缩放下用 `100%` 和 `4时56分` 复测。两项修复仍待构建和实装。沿用原电脑 v1.10.2 基线时，它们作为修复版升到 v1.10.3。
+- 原电脑的 `本地实装/最终验收.json`、`本地实装/Antigravity联动验收.json`、构建目录、安装备份及真实用户资料都在本地。新电脑重新生成自己的验收记录。
+
+## Windows 构建与实装
+
+从仓库根目录运行。使用 Windows x64 和 Python 3.12，按 [requirements-enhanced.txt](requirements-enhanced.txt) 安装依赖。
+
+```powershell
+py -3.12 -m venv .venv
+$python = '.\.venv\Scripts\python.exe'
+& $python -m pip install -r requirements-enhanced.txt
+```
+
+选择本次相关的测试模块。比如下一步处理 Antigravity 用量和卡片展示，可先跑下面的源码检查。`tools/check_source.py` 和构建入口会清理临时目录，按 AGENTS.md 取得当轮允许的清理范围再执行。
+
+```powershell
+& $python tools/check_source.py test_antigravity test_antigravity_data test_quota_summary test_compact_bubble
+```
+
+仅改程序、动画目录内容一致时，可以复用与 [素材目录](app/material_catalog.json) 匹配的轻量目录。默认缓存位于 `%LOCALAPPDATA%\BailongEnhanced\materials\light\<素材ID>`，安装目录中的轻量素材或已解压的匹配轻量包也可用。传入直接包含 `素材清单.json` 的目录，构建入口逐项校验文件与源码清单。需要从原素材完整构建时，先通过白龙素材设置下载高清资源，运行 `tools/import_installed_assets.py`，再走默认构建入口。细节见 [开发与构建](docs/DEVELOPMENT.md)。
+
+```powershell
+$light = Read-Host '与目录匹配的轻量素材目录'
+& $python build_local.py --build-only --light-source $light --tests test_settings_presentation test_quota_summary
+# 构建验收通过，且源码和包体一致时再执行本地实装。
+& $python build_local.py --deploy-verified
+```
+
+Windows 默认用户数据目录为 `%LOCALAPPDATA%\BailongEnhanced`，默认程序目录为 `%LOCALAPPDATA%\Programs\BailongEnhanced`。实装前核对本机实际入口和版本。API Key、OAuth、Sidecar 的本地授权配置和真实会话资料留在各自机器。另一台电脑重新登录和配置；DPAPI 加密凭据的可用性与原 Windows 环境绑定。
+
+## Antigravity 联调入口
+
+1. 在新电脑安装并登录 Antigravity 桌面端。此前实际联调版本为 Windows App 2.34.0.0。更换版本后重查 Hook 回执、Sidecar 启动和本地数据库字段。
+2. 在白龙设置的「运行与连接」（旧版左侧显示「Codex」）里开启「监听 Antigravity 桌面 App」、配置状态桥接并保存。卡片左上角箭头切换来源，标题打开选中的应用。额度桥接可单独配置。
+3. 需要测试白龙闲聊时，进入「聊天设置 → Antigravity」，在 Antigravity 建立白龙专用项目，用该电脑的项目 ID 配置桌面 App 聊天。重点验收一次发送、同会话续聊、取消后不误报完成。Sidecar 的发送走公开 `agentapi`，额度读取和停止回复目前还依赖 App 内部接口。
+4. 日志索引读取 `%USERPROFILE%\.gemini\antigravity\conversations` 下的本机数据库，写入白龙自己的 `antigravity-usage.sqlite3`。另一台电脑会从它可读到的会话建立索引。
+
+## 下一项功能
+
+拟在「展开卡片 → Token 明细」增加所选会话的「最近请求」，显示会话名、请求时间、未缓存输入、缓存读取、缓存写入和输出。主卡片「今日 Token」继续保留总量，悬停显示当天四项合计。两处目前都没有实现。
+
+[Antigravity 用量索引](app/antigravity_usage.py) 的 `requests` 表已经保存这些分项和会话标识。新增明细时复用现有请求去重规则；多个活跃会话按明确的会话选择展示，缺失用量显示未知。已完成请求的记录出现后刷新，保持当前阅读位置。
+
+「本轮合计」下一步再做，先验证一条用户消息触发的多次模型请求能否按会话和步骤准确归属。上下文占用另用模型的实际窗口上限计算。参考 [agy-capsule 的数据口径](https://github.com/Lumidarin/agy-capsule#数据口径)。
 
 ## Antigravity 桌面 App 联动开发
 
