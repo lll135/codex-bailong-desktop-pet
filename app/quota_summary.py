@@ -9,9 +9,16 @@ from PySide6.QtWidgets import QApplication,QWidget,QToolButton
 from compact_bubble import font,INK,MUTED
 from quota_summary_data import quota_items,today_tokens
 from reset_watch import local_time
+from token_calendar import compact_tokens
 from ui_theme import QUOTA_WEEK,QUOTA_FIVE,QUOTA_LOW,STATUS_MODULE_RADIUS,status_footer_path
 
 HEIGHT=102
+
+
+def _compact_or_unknown(value):
+    if type(value) is not int or value<0:return '未知'
+    try:return compact_tokens(value)
+    except OverflowError:return '>999T'
 
 def quota_color(item):
     from theme_registry import week_color
@@ -207,7 +214,10 @@ class QuotaSummary(QWidget):
                 self._draw_dual_row(p,index,item,y);continue
             p.setFont(font(11,not self.expanded));p.setPen(theme_color(MUTED))
             label='周' if not single and index==self.week_index and self.anomaly else item['label']
-            p.drawText(QRectF(9 if self.expanded else 10,y+8 if self.expanded else y+7,self.width()-(18 if self.expanded else 20),14 if self.expanded else 18),Qt.AlignmentFlag.AlignVCenter,label)
+            heading_rect=QRectF(9 if self.expanded else 10,y+8 if self.expanded else y+7,self.width()-(18 if self.expanded else 20),14 if self.expanded else 18)
+            p.drawText(heading_rect,Qt.AlignmentFlag.AlignVCenter,label)
+            if not self.expanded and index==0 and not self.anomaly and self.active!=index:
+                self._draw_group_tag(p,heading_rect,label,item.get('group',''))
             value=item['display'];color=quota_color(item) if item['remaining'] is not None else MUTED
             p.setPen(theme_color(color));p.setFont(font(29 if self.expanded else 28 if single else 18,True))
             value_rect=self.value_rect(index)
@@ -247,7 +257,10 @@ class QuotaSummary(QWidget):
         precise=self.active==index and item['reset_at'] and not item['expired']
         date,clock=local_time(item['reset_at']).split(' ',1) if precise else ('','')
         p.setFont(font(12,True));p.setPen(theme_color(MUTED))
-        p.drawText(QRectF(10,y+3,self.width()-20,18),Qt.AlignmentFlag.AlignVCenter,date if precise else item['label'])
+        heading_rect=QRectF(10,y+3,self.width()-20,18)
+        p.drawText(heading_rect,Qt.AlignmentFlag.AlignVCenter,date if precise else item['label'])
+        if index==0 and not precise and not self.anomaly:
+            self._draw_group_tag(p,heading_rect,item['label'],item.get('group',''))
         value=item['display'];rect=self.value_rect(index)
         text=clock if precise else item['reset_text'].removesuffix('后重置')
         reset_font=font(11);reset_metrics=QFontMetrics(reset_font,p.device())
@@ -273,6 +286,18 @@ class QuotaSummary(QWidget):
             p.drawArc(QRectF(cx-4,cy-4,8,8),45*16,285*16)
             p.drawLine(round(cx+3),round(cy-4),round(cx+3),round(cy-1))
         self._track(p,self.track_rect(index),item)
+    def _draw_group_tag(self,p,rect,label,group):
+        if not group or self.expanded:return
+        label_width=QFontMetrics(p.font(),p.device()).horizontalAdvance(label)
+        budget=math.floor(rect.width()-label_width-6)
+        if budget<=18:return
+        group_font=font(10)
+        text=QFontMetrics(group_font,p.device()).elidedText(group,Qt.TextElideMode.ElideRight,budget)
+        if not text:return
+        p.save();p.setFont(group_font);p.setPen(theme_color(MUTED))
+        p.drawText(QRectF(rect.left()+label_width+6,rect.top(),budget,rect.height()),
+                   Qt.AlignmentFlag.AlignVCenter|Qt.AlignmentFlag.AlignRight,text)
+        p.restore()
     def paintEvent(self,event):
         self.ensure_static();p=QPainter(self);p.drawPixmap(0,0,self._static);p.setRenderHint(QPainter.RenderHint.Antialiasing);p.setPen(Qt.PenStyle.NoPen)
         for index,item in enumerate(self.items):
@@ -284,20 +309,39 @@ class QuotaSummary(QWidget):
 class TodayTokens(QWidget):
     activated=Signal()
     HEIGHT=20
+    BREAKDOWN_FIELDS=(('uncached','未缓存输入'),('cache_read','缓存读取'),('cache_write','缓存写入'),('output','输出'))
     def __init__(self,snapshot,parent=None,selected=False):
         super().__init__(parent);self.setObjectName('today_tokens');self.setFixedHeight(self.HEIGHT);self.data=today_tokens(snapshot)
         from number_roll import NumberRoll
         self.roll=NumberRoll(self,digits=True);self.roll.snap(self.data['display']+(' 部分' if self.data['partial'] else ''),self.data['count'])
         self.hovered=False;self.pressed=False;self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.selected=None;self.set_selected(selected);self.setAccessibleDescription(self.data['description'])
+        self.selected=None;self._sync_breakdown_hint();self.set_selected(selected)
     def set_data(self,snapshot,live=None):
         previous=self.data;self.data=today_tokens(snapshot,live=live)
         self.roll.set(self.data['display']+(' 部分' if self.data['partial'] else ''),self.data['count'],animate=self.isVisible())
-        self._accessible()
+        self._accessible();self._sync_breakdown_hint()
         if any(previous[k]!=self.data[k] for k in ('display','partial','known')):self.update()
+    def _sync_breakdown_hint(self):
+        if self.data.get('provider')=='antigravity':
+            breakdown=self.data.get('breakdown') or {}
+            rows=[(label,_compact_or_unknown(breakdown.get(key))) for key,label in self.BREAKDOWN_FIELDS]
+            self.setProperty('detailHintTitle','今日 Token')
+            self.setProperty('detailHintValue',self.data['display'] if self.data['known'] else '未知')
+            self.setProperty('detailHintRows',rows)
+            self.setProperty('detailHintNote','部分日志暂不可读，合计可能不完整' if self.data['partial'] else '')
+        else:
+            for name in ('detailHintTitle','detailHintValue','detailHintRows','detailHintNote'):
+                self.setProperty(name,None)
+        hints=getattr(self.window(),'inline_explanations',None)
+        if hints is not None:hints.refresh_target(self)
     def _accessible(self):
         self.setAccessibleName('今日 Token '+self.data['display']+'；'+('当前显示今日24小时曲线' if self.selected else '点击查看今日24小时曲线'))
-        self.setAccessibleDescription(self.data['description'])
+        description=self.data['description']
+        if self.data.get('provider')=='antigravity':
+            breakdown=self.data.get('breakdown') or {}
+            parts='，'.join(f'{label} {_compact_or_unknown(breakdown.get(key))}' for key,label in self.BREAKDOWN_FIELDS)
+            description+='\n'+parts
+        self.setAccessibleDescription(description)
     def hideEvent(self,event):
         if not self.roll.rebuilding:self.roll.snap()
         super().hideEvent(event)

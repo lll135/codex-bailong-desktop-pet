@@ -61,15 +61,17 @@ def quota_items(windows, now=None):
         if not valid:
             description += '\n空轨道表示未知，不代表 0%。'
         label = {'5小时': '5h剩余', '一周': '周剩余'}.get(name, name if len(name) <= 5 else name[:4] + '…')
+        group = window.get('group')
+        group = group.strip()[:100] if isinstance(group, str) else ''
         result.append(dict(id='quota:' + name, name=name, label=label, remaining=remaining,
                            progress=remaining / 100 if valid else None, display=display,
                            low=valid and remaining <= 15, expired=expired, reset_at=stamp,
-                           reset_text=reset_text, description=description))
+                           reset_text=reset_text, description=description, group=group))
         if len(result) == 2:
             break
     return result or [dict(id='quota:unknown', name='额度', label='额度剩余', remaining=None,
                           progress=None, display='—', low=False, expired=False, reset_at=None,
-                          reset_text='重置时间未知', description='账户额度尚未取得。\n空轨道表示未知，不代表 0%。')]
+                          reset_text='重置时间未知', description='账户额度尚未取得。\n空轨道表示未知，不代表 0%。', group='')]
 
 
 def today_tokens(tokens, now=None, live=None):
@@ -77,6 +79,8 @@ def today_tokens(tokens, now=None, live=None):
     now = time.time() if now is None else now
     today = datetime.fromtimestamp(now).date()
     snapshot = tokens if isinstance(tokens, dict) else {}
+    agy = snapshot.get('provider') == 'antigravity'
+    scope = '本机 Antigravity 会话；合计未缓存输入、缓存读写与输出。' if agy else '本机 Codex 日志；输入含缓存，输出含推理。'
     partial = snapshot.get('partial') is True
     days = snapshot.get('days')
     known = (bool(snapshot) and not snapshot.get('unavailable')
@@ -99,6 +103,14 @@ def today_tokens(tokens, now=None, live=None):
                 count = value if valid else 0
     if isinstance(live,dict) and live.get('day')==today.isoformat() and type(live.get('count')) is int and live['count']>=0:
         count=live['count'];known=True;partial=partial or bool(live.get('partial'))
+    breakdown = None
+    raw_breakdown = snapshot.get('today_breakdown') if agy and known else None
+    if isinstance(raw_breakdown, dict) and raw_breakdown.get('day') == today.isoformat():
+        breakdown = {
+            key: value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+            for key in ('uncached', 'cache_read', 'cache_write', 'output')
+            for value in (raw_breakdown.get(key),)
+        }
     if known:
         try:
             if 1_000_000_000 <= count < 10_000_000_000:
@@ -110,10 +122,11 @@ def today_tokens(tokens, now=None, live=None):
             # JSON integers have arbitrary precision; oversized counters must
             # not crash the UI during compact formatting.
             display = '>999T'
-        description = f'今日 Token：{count:,}\n本机 Codex 日志；输入含缓存，输出含推理。此数值不表示套餐额度。'
+        description = f'今日 Token：{count:,}\n{scope}此数值不表示套餐额度。'
     else:
         display = '待统计'
-        description = '今日 Token 尚未取得有效统计。\n统计口径：本机 Codex 日志；输入含缓存，输出含推理。'
+        description = f'今日 Token 尚未取得有效统计。\n统计口径：{scope}'
     if partial:
         description += '\n部分日志暂不可读，仅包含已读取记录。'
-    return dict(display=display, count=count if known else None, known=known, partial=partial, description=description)
+    return dict(display=display, count=count if known else None, known=known, partial=partial,
+                description=description, breakdown=breakdown, provider='antigravity' if agy else 'codex')

@@ -265,11 +265,29 @@ class DetailHint(HintBubble):
 class HeaderHintBubble(DetailHint):
     comparison_value=None
     comparison_size=(DETAIL_WIDTH,DETAIL_MIN_HEIGHT)
+    detail_rows=None
+    detail_size_hint=(DETAIL_WIDTH,DETAIL_MIN_HEIGHT)
 
     def hint_size(self):
+        if self.detail_rows is not None:return self.detail_size_hint
         return super().hint_size() if self.comparison_value is None else self.comparison_size
 
     def paintEvent(self,event):
+        if self.detail_rows is not None:
+            painter=QPainter(self);theme=self.paint_detail(painter,self.comparison_value or '')
+            if theme is None:return
+            y=36
+            for label,value in self.detail_rows:
+                painter.setFont(ui_font(11));painter.setPen(QColor(theme['muted']))
+                painter.drawText(QRectF(11,y,self.width()-96,18),Qt.AlignmentFlag.AlignVCenter,str(label))
+                painter.setFont(ui_font(12,True));painter.setPen(QColor(theme['muted'] if value=='未知' else theme['ink']))
+                painter.drawText(QRectF(11,y,self.width()-22,18),Qt.AlignmentFlag.AlignVCenter|Qt.AlignmentFlag.AlignRight,str(value))
+                y+=22
+            if self.subtitle:
+                painter.setFont(ui_font(10));painter.setPen(QColor(theme['muted']))
+                painter.drawText(QRectF(11,y+2,self.width()-22,max(0,self.height()-y-10)),
+                                 Qt.AlignmentFlag.AlignTop|Qt.TextFlag.TextWordWrap,self.subtitle)
+            return
         if self.comparison_value is None:return super().paintEvent(event)
         painter=QPainter(self);theme=self.paint_detail(painter,self.comparison_value)
         if theme is None:return
@@ -296,6 +314,8 @@ class HeaderHints(QObject):
         self.delay.stop();self.leave.stop();self.watch.stop();self.target=None;self.rebuilding=False;self.role=None;self._hold_hover_layout=False;self.popup.dismiss(immediate)
 
     def _hint(self,widget):
+        if widget.property('detailHintRows'):
+            return str(widget.property('detailHintTitle') or ''),str(widget.property('detailHintNote') or '')
         detail=widget.property('quotaComparisonHint')
         if detail:return str(widget.property('quotaComparisonTitle') or '额度对照'),str(detail)
         return str(widget.property('headerActionHint') or '')[:4],''
@@ -353,6 +373,20 @@ class HeaderHints(QObject):
         point=button.mapToGlobal(QPoint());anchor=QRect(point,button.size())
         report=getattr(b,'report',None)
         owner=report if report is not None and report.isVisible() else b
+        self.popup.detail_rows=None;self.popup.comparison_value=None
+        rows=button.property('detailHintRows')
+        if rows:
+            width,_=detail_size(button,DETAIL_MIN_HEIGHT)
+            note_height=QFontMetrics(ui_font(10)).boundingRect(QRect(0,0,max(1,width-22),1000),Qt.AlignmentFlag.AlignLeft|Qt.TextFlag.TextWordWrap,detail).height()+10 if detail else 8
+            height=38+len(rows)*22+note_height
+            self.popup.detail_rows=[tuple(item) for item in rows]
+            self.popup.comparison_value=str(button.property('detailHintValue') or '')
+            self.popup.detail_size_hint=detail_size(button,height)
+            target=detail_position(button,anchor,self.popup.detail_size_hint)
+            self.popup.present(text,detail,anchor,button.screen(),owner=owner,
+                               topmost=bool(b.windowFlags()&Qt.WindowType.WindowStaysOnTopHint),geometry=target)
+            self.watch.start()
+            return
         self.popup.comparison_value=button.property('quotaComparisonValue')
         if self.popup.comparison_value is not None:
             width,_=detail_size(button,DETAIL_MIN_HEIGHT)

@@ -12,7 +12,7 @@ from ui_theme import status_footer_path
 
 class SessionRateBubble(DetailHint):
     def __init__(self):
-        super().__init__();self.rows=[];self.total=None;self.scroll=0;self.size_limit=(294,340)
+        super().__init__();self.rows=[];self.total=None;self.historical=False;self.scroll=0;self.size_limit=(294,340)
         self.setWindowFlag(Qt.WindowType.WindowTransparentForInput,False)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents,False)
         self.service=shared();self.service.changed.connect(self.status_changed)
@@ -22,6 +22,7 @@ class SessionRateBubble(DetailHint):
         if self.isVisible():self.update()
     def inspect(self,value,host):
         opening=not self.isVisible()
+        self.historical=bool(value.get('historical'))
         self.rows=list(value.get('details') or []);self.total=value.get('rate')
         if opening:self.scroll=0
         self.size_limit=detail_size(host,min(340,64+max(1,len(self.rows))*self.row_height()))
@@ -36,12 +37,13 @@ class SessionRateBubble(DetailHint):
         target=detail_position(host,anchor,self.size_limit)
         placement=(target,anchor,owner,topmost)
         if opening or placement!=previous:
-            self.present('会话实时速率','',anchor,screen,owner=owner,topmost=topmost,geometry=target)
+            title='会话历史速率' if self.historical else '会话实时速率'
+            self.present(title,'',anchor,screen,owner=owner,topmost=topmost,geometry=target)
             self._placement=placement
         self.scroll=max(0,min(self.scroll,self.scroll_limit()))
         self.setAccessibleDescription('\n'.join(str(r.get('name') or r.get('session'))+' '+display(r.get('rate'))+' tok/s' for r in self.rows))
         self.update()
-        if opening:self.service.request()
+        if opening and not self.historical:self.service.request()
     def wheelEvent(self,event):
         delta=event.pixelDelta().y() or event.angleDelta().y()/120*self.row_height()
         self.scroll=max(0,min(self.scroll-delta,self.scroll_limit()));self.update();event.accept()
@@ -49,13 +51,15 @@ class SessionRateBubble(DetailHint):
     def scroll_limit(self):return max(0,64+len(self.rows)*self.row_height()-self.height())
     def paintEvent(self,event):
         p=QPainter(self);recent=self.total is not None and summarize_rates(self.rows)['recent']
-        theme=self.paint_detail(p,('刚刚输出 ' if recent else '合计 ')+display(self.total)+' tok/s')
+        prefix='最近输出 ' if self.historical else '刚刚输出 ' if recent else '合计 '
+        theme=self.paint_detail(p,prefix+display(self.total)+' tok/s')
         if theme is None:return
         content=QRectF(11,33,max(0,self.width()-22),max(0,self.height()-63))
         p.save();p.setClipRect(content,Qt.ClipOperation.IntersectClip)
         if not self.rows:
             p.setFont(font(11));p.setPen(QColor(theme['muted']))
-            text=QFontMetrics(p.font()).elidedText('等待会话输出和有效采样',Qt.TextElideMode.ElideRight,int(content.width()))
+            empty='暂无 Antigravity 历史速率记录' if self.historical else '等待会话输出和有效采样'
+            text=QFontMetrics(p.font()).elidedText(empty,Qt.TextElideMode.ElideRight,int(content.width()))
             p.drawText(content,Qt.AlignmentFlag.AlignVCenter,text)
         for i,row in enumerate(self.rows):
             y=content.top()+i*self.row_height()-self.scroll
@@ -69,12 +73,15 @@ class SessionRateBubble(DetailHint):
         p.restore()
         y=self.height()-29
         p.setPen(QColor(theme['border']));p.drawLine(10,y,self.width()-10,y)
-        value=self.service.value;ink,dot=service_colors(theme,value['tone'])
-        p.setFont(font(11));p.setPen(QColor(theme['muted']));p.drawText(11,y+18,'服务')
-        p.setFont(font(12,True))
-        center=y+18+QFontMetricsF(p.font(),p.device()).tightBoundingRect(value['title']).center().y()+.5
-        p.setPen(Qt.PenStyle.NoPen);p.setBrush(QColor(dot));p.drawEllipse(QRectF(43,center-2.5,5,5))
-        p.setPen(QColor(ink));p.drawText(54,y+18,value['title'])
+        if self.historical:
+            p.setFont(font(11));p.setPen(QColor(theme['muted']));p.drawText(11,y+18,'按服务端生成耗时统计')
+        else:
+            value=self.service.value;ink,dot=service_colors(theme,value['tone'])
+            p.setFont(font(11));p.setPen(QColor(theme['muted']));p.drawText(11,y+18,'服务')
+            p.setFont(font(12,True))
+            center=y+18+QFontMetricsF(p.font(),p.device()).tightBoundingRect(value['title']).center().y()+.5
+            p.setPen(Qt.PenStyle.NoPen);p.setBrush(QColor(dot));p.drawEllipse(QRectF(43,center-2.5,5,5))
+            p.setPen(QColor(ink));p.drawText(54,y+18,value['title'])
 
 class LiveRateCard(QWidget):
     def __init__(self,value=None,parent=None):
@@ -119,7 +126,7 @@ class LiveRateCard(QWidget):
             if expires<=time.monotonic():self._expire()
             else:self.expiry.start(max(1,round((expires-time.monotonic())*1000)+1))
     def _rate_label(self):
-        return '刚刚' if self.value.get('recent') else '实时'
+        return '历史' if self.value.get('historical') else '刚刚' if self.value.get('recent') else '实时'
     def _expire(self):
         now=time.monotonic();details=[]
         for row in self.value.get('details',[]):
@@ -146,6 +153,7 @@ class LiveRateCard(QWidget):
 
     def _show_hint(self):
         self._trace_hover('show-request')
+        if not self.isEnabled():self._hide_hint();return
         if self._rebuilding or self._hold_hover_layout:return
         transition=getattr(self.window(),'size_transition',None)
         if transition and (transition.preparing or transition.running):
@@ -238,16 +246,17 @@ class LiveRateCard(QWidget):
         if not self._hold_hover_layout and not self._rebuilding and not self.isVisible():
             self._hide_hint()
     def paintEvent(self,event):
-        expanded=getattr(self,'expanded',False);height=self.height();margin=7 if expanded else 6
+        expanded=getattr(self,'expanded',False);height=self.height();margin=7 if expanded else 6;enabled=self.isEnabled()
         p=QPainter(self);p.setRenderHint(QPainter.RenderHint.Antialiasing);p.setPen(Qt.PenStyle.NoPen);p.setBrush(QColor(theme_color('#f5f2f7' if expanded else '#e8def0')))
         p.drawPath(status_footer_path(QRectF(self.rect()),side=-1,alignment=0. if expanded else 1.))
-        p.setFont(font(11 if expanded else 10));p.setPen(theme_color(MUTED));p.drawText(QRectF(margin,0,22,height),Qt.AlignmentFlag.AlignVCenter,'实时')
+        if not enabled:p.setOpacity(.45)
+        p.setFont(font(11 if expanded else 10));p.setPen(theme_color(MUTED));p.drawText(QRectF(margin,0,22,height),Qt.AlignmentFlag.AlignVCenter,'历史' if self.value.get('historical') else '实时')
         if expanded:
             from typography import ui_font
             p.setFont(ui_font(10))
         unit='tok/s';unit_width=QFontMetrics(p.font()).horizontalAdvance(unit);unit_x=self.width()-margin-unit_width
         p.drawText(QRectF(unit_x,.5,unit_width,height),Qt.AlignmentFlag.AlignVCenter,unit)
-        p.setOpacity(self.alpha);p.setFont(font(11 if expanded else 12,not expanded));p.setPen(theme_color(MUTED if self.value.get('recent') else INK));value=display(self.value.get('rate'))
+        p.setOpacity(.45 if not enabled else self.alpha);p.setFont(font(11 if expanded else 12,not expanded));p.setPen(theme_color(MUTED if self.value.get('recent') or not enabled else INK));value=display(self.value.get('rate'))
         rect=QRectF(31,1,max(0,unit_x-35),height);self.number_rect=rect;self.unit_x=unit_x
         if QFontMetrics(p.font()).horizontalAdvance(value)>rect.width():p.setFont(font(10,True))
         self.roll.paint(p,rect)

@@ -40,17 +40,23 @@ class TokenPlot(QWidget,RasterChart,ComboChart):
         if not same_series:self.series=usage_series(snapshot,period,now)
         if not unchanged:self.invalidate_layers()
         s=self.series;bucket=s.get('bucket_days',1)
+        agy=self.snapshot.get('provider')=='antigravity'
         description=f"{s['title']}，{s['total']:,} Tokens；{s['start']} 至 {s['end']}。"
         description+='每小时消耗，非累计曲线；当天00–24时，当前小时尚未结束。' if s['mode']=='line' else f'每根柱覆盖{bucket}天，悬停查看日期与用量。'
-        description+='仅本机可读取日志；输入含缓存，输出含推理，均不重复相加。'
+        description+='仅本机可读取记录；合计未缓存输入、缓存读写与输出。' if agy else '仅本机可读取日志；输入含缓存，输出含推理，均不重复相加。'
         if self.snapshot.get('checked'):description+='截至'+datetime.fromtimestamp(self.snapshot['checked']).strftime('%m-%d %H:%M')+'。'
         if not s['available']:description+='统计中或暂不可用。'
         if self.snapshot.get('partial'):description+='部分日志暂不可读。'
-        agy=self.snapshot.get('provider')=='antigravity'
         name=('小时用量' if agy else '小时曲线') if s['mode']=='line' else '用量柱状图'
         self.setAccessibleName(('Antigravity' if agy else 'Codex')+' Token '+name)
-        rate_description=' 曲线按小时显示采样期间的输出速率。' if period=='day' else ' 回合均速包含思考、工具和等待时间。'
-        self.setAccessibleDescription(description+('' if agy else rate_description));self.setToolTip('')
+        show_rates=bool((self.snapshot.get('report') or {}).get('supports_rates',not agy) and self.snapshot.get('rates')) or not agy
+        if agy and show_rates:
+            rate_description=' 曲线按小时显示服务端生成速率。' if period=='day' else ' 曲线按天显示服务端平均生成速率。'
+        elif not agy:
+            rate_description=' 曲线按小时显示采样期间的输出速率。' if period=='day' else ' 回合均速包含思考、工具和等待时间。'
+        else:
+            rate_description=''
+        self.setAccessibleDescription(description+rate_description);self.setToolTip('')
         if not unchanged:self.resume_inspection(held);self.update()
 
     def chart_rect(self):
@@ -72,10 +78,12 @@ class TokenPlot(QWidget,RasterChart,ComboChart):
             left,right=s['start'][5:].replace('-','/'),s['end'][5:].replace('-','/')
         hourly=s['mode']=='line'
         agy=self.snapshot.get('provider')=='antigravity'
+        show_rates=bool((self.snapshot.get('report') or {}).get('supports_rates',not agy) and rates) or not agy
+        has_costs=bool((self.snapshot.get('projects') or {}).get('chart_cost'))
         self.combo_layers(p,dynamic,bins,items,plot,s['available'],by_model=hourly or self.period=='7d',
-                          output_rates=(rates.get('today_output') or []) if hourly and not agy else None,
-                          cost_buckets=chart_cost_buckets(bins,self.snapshot.get('projects'),day=s['start'] if hourly else None) if not agy else None,
-                          show_rates=not agy)
+                          output_rates=(rates.get('today_output') or []) if hourly and show_rates else None,
+                          cost_buckets=chart_cost_buckets(bins,self.snapshot.get('projects'),day=s['start'] if hourly else None) if (has_costs or not agy) else None,
+                          show_rates=show_rates)
         self.hits=[(record['rect'],b) for record,b in zip(self._combo_records,bins)]
         self.points=[QPointF(record['rect'].center().x(),plot.bottom()) for record,b in zip(self._combo_records,bins) if not b.get('future') and s['available']]
         p.setFont(font(10 if getattr(self,'expanded',False) else 11));p.setPen(theme_color(MUTED));top=self.height()-QFontMetrics(p.font()).height()-2
@@ -87,9 +95,10 @@ class TokenPlot(QWidget,RasterChart,ComboChart):
         if b['future']:value='尚未到来'
         elif not self.series['available']:value='统计暂不可用' if self.snapshot.get('unavailable') else '正在统计…'
         else:value=f"{b['value']:,} Tokens"
-        text=b['label']+' · '+value
+        agy=self.snapshot.get('provider')=='antigravity'
+        text=b['label']+('  ' if agy else ' · ')+value
         if b['current']:text+='\n当前小时尚未结束' if self.series['mode']=='line' else '\n含今天，今日用量仍在更新'
-        return text+'\n本机 Codex 日志 · 输入（含缓存）+ 输出（含推理）'
+        return text+('\n本机 Antigravity 会话 / 未缓存输入、缓存读写与输出' if agy else '\n本机 Codex 日志 · 输入（含缓存）+ 输出（含推理）')
     def begin_reveal(self):self.ensure_layers();self.reveal.prepare()
     def start_reveal(self):self.reveal.start()
     def hideEvent(self,event):

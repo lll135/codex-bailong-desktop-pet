@@ -84,10 +84,14 @@ class SurfacePolicy(QObject):
                 pet.set_focus_hidden(True);return
             # Clicking the pet from Codex is still part of that interaction.
             if self.foreground_codex and not pet._focus_hidden:return
-        key=(hwnd,pid)
+        key=(hwnd,pid,bool(pet.settings.get('antigravity_enabled')))
         if key!=self.foreground_key:
             from desktop_services import codex_desktop_process
-            self.foreground_key=key;self.foreground_codex=codex_desktop_process(pid)
+            focused=codex_desktop_process(pid)
+            if not focused and key[2]:
+                from antigravity import desktop_process
+                focused=desktop_process(pid)
+            self.foreground_key=key;self.foreground_codex=focused
         pet._focus_editor_override=False
         pet.set_focus_hidden(not self.foreground_codex)
 

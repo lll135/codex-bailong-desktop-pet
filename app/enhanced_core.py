@@ -466,6 +466,7 @@ class RolloutTail:
         self.discovered=set();self.file_ids={};self.queue=[];self.by_id={}
         self.continuations={}
         self.rate_observer=None;self.usage_observer=None
+        self._offline_reported=False
         self.attached={};self._identity_checked=set();self._identity_scan=-1e9;self._hidden=set();self._rollout_aliases=set()
     def set_pins(self,ids):self.pins={session_id(s) for s in ids}
     def poll(self):
@@ -567,8 +568,13 @@ class RolloutTail:
         for sid in disposable[256:]:self.reducer.sessions.pop(sid,None)
         if not self.seeded:
             self.seeded=True
+            self._offline_reported=not bool(self.files)
             if self.reducer.last_quota:events.append(self.reducer.last_quota)
             events.append(dict(kind='status',state='idle' if self.files else 'offline',text='已找到本机 Codex 会话，等待新消息' if self.files else '尚未找到本机 Codex 会话，请打开 Codex 并发送消息',title='Codex 状态',active=0))
+        elif self._offline_reported and self.files and readable>0:
+            self._offline_reported=False
+            if not any(e.get('kind')=='status' for e in events):
+                events.append(dict(kind='status',state='idle',text='已找到本机 Codex 会话，等待新消息',title='Codex 状态',active=0,waiting=0))
         hidden={session_id(sid) for sid,s in self.reducer.sessions.items() if s.source_hidden}|set(self.attached)|self._rollout_aliases
         if hidden!=self._hidden:
             self._hidden=hidden

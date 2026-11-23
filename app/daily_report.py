@@ -305,8 +305,11 @@ class DailyReport(QWidget):
                 if self.page=='overview':
                     self.stats.report=r;self.stats.update()
                     self.hour_total.setText(compact_tokens(r.get('yesterday_total',0)));self.daily_cost.set_data(r,self.snapshot.get('projects'))
+                    has_cost=self._has_yesterday_cost(r)
+                    self.daily_cost.setVisible(has_cost);self.hour_total.setVisible(not has_cost)
                     if any(r.get(key)!=old.get(key) for key in ('hours','hour_models','rates')):self.plot.set_data(r)
                     self.readout.setText(self._daily_readout(r))
+                    self.readout.setVisible(bool(r.get('supports_rates',self.snapshot.get('provider')!='antigravity')))
                     self._update_analogy(r)
                 elif self.page=='models':
                     if r.get('day')!=old.get('day'):self.ensure_chrome(r)
@@ -319,9 +322,14 @@ class DailyReport(QWidget):
                 self._refresh_page_frame()
             else:
                 self.rebuild();self.sync_geometry();self.chart_entry()
+    def _has_yesterday_cost(self,r):
+        if self.snapshot.get('provider')!='antigravity':return True
+        days=(((self.snapshot.get('projects') or {}).get('chart_cost') or {}).get('days') or {})
+        return bool(days.get(r.get('day')))
     def _daily_readout(self,r):
         item=(r.get('rates') or {}).get('yesterday_mean') or {}
-        return '昨日回合均速  '+(rate_text(item) if item.get('rate') is not None else '—')
+        prefix='昨日生成均速  ' if self.snapshot.get('provider')=='antigravity' else '昨日回合均速  '
+        return prefix+(rate_text(item) if item.get('rate') is not None else '—')
     def open_yesterday_cost(self):
         self.calendar_picks['projects'].pop(DAY,None)
         self.period=DAY;self.set_page('projects')
@@ -374,8 +382,12 @@ class DailyReport(QWidget):
         cutoff=self._cutoff(kind)
         return date_bounds(self.period,self.calendar_picks[kind].get(self.period,cutoff))
     def _watch_project_range(self,bounds,*,refresh=True):
-        activity=getattr(self.bubble.owner_pet(),'activity',None)
-        watch=getattr(activity,'set_project_range',None)
+        pet=self.bubble.owner_pet()
+        if self.snapshot.get('provider')=='antigravity':
+            watch=getattr(pet,'set_antigravity_project_range',None)
+        else:
+            activity=getattr(pet,'activity',None)
+            watch=getattr(activity,'set_project_range',None)
         if watch:
             if refresh:watch(bounds)
             else:watch(bounds,refresh=False)
@@ -692,14 +704,15 @@ class DailyReport(QWidget):
             scope.addWidget(filters);self.layout.addWidget(nav)
         self.day_label.setText(r.get('day','--')[5:].replace('-','/')+' 昨日' if self.page=='overview' else '')
         agy=self.snapshot.get('provider')=='antigravity'
+        show_rates=bool(r.get('supports_rates',not agy))
         self.header_title.setText('Antigravity' if agy else '数据面板')
-        for page in ('cycle','projects'):self.page_buttons[page].setVisible(not agy)
+        for page in ('cycle','projects'):self.page_buttons[page].setVisible(True)
         for page,b in self.page_buttons.items():b.setChecked(page==self.page)
         show_period=self.page in ('models','projects')
         self.cost_more_button.setVisible(self.page=='projects')
         self.quota_more_button.setVisible(self.page=='cycle')
-        self.model_rate_label.setVisible(not agy)
-        height=51 if self.page=='models' and not agy else 27
+        self.model_rate_label.setVisible(show_rates)
+        height=51 if self.page=='models' and show_rates else 27
         self.scope_row.setFixedHeight(height);self.scope_left.setFixedHeight(height)
         self.scope_row.setVisible(show_period);self.nav_panel.setFixedHeight(29+height if show_period else 27)
         is_cost=self.page=='projects'
@@ -769,20 +782,22 @@ class DailyReport(QWidget):
             self.stats=OverviewStats(r);self.stats.set_columns(width-22);content.addWidget(self.stats)
             chart,chart_layout=self.card('report_hourly_card')
             title=QHBoxLayout();title.setContentsMargins(0,0,0,0)
-            self.hour_total=self.label(compact_tokens(r.get('yesterday_total',0)),14,True);self.hour_total.hide()
+            self.hour_total=self.label(compact_tokens(r.get('yesterday_total',0)),14,True)
             self.daily_cost=DailyCostButton();self.daily_cost.set_data(r,self.snapshot.get('projects'));self.daily_cost.clicked.connect(self.open_yesterday_cost)
             chart_layout.addWidget(self.daily_cost)
-            agy=self.snapshot.get('provider')=='antigravity'
-            if agy:
-                self.daily_cost.hide();self.hour_total.show();chart_layout.addWidget(self.hour_total)
+            chart_layout.addWidget(self.hour_total)
+            has_cost=self._has_yesterday_cost(r)
+            self.daily_cost.setVisible(has_cost)
+            self.hour_total.setVisible(not has_cost)
+            show_rates=bool(r.get('supports_rates',self.snapshot.get('provider')!='antigravity'))
             self.plot=ReportPlot(r);chart_layout.addWidget(self.plot)
             self.readout=self.secondary(self.label(self._daily_readout(r),9))
-            self.readout.setObjectName('report_hourly_readout');chart_layout.addWidget(self.readout);self.readout.setVisible(not agy)
+            self.readout.setObjectName('report_hourly_readout');chart_layout.addWidget(self.readout);self.readout.setVisible(show_rates)
             # Hourly detail is shown in the chart's hover window.
             content.addWidget(chart)
             hint_row=QHBoxLayout();hint_row.setSpacing(4)
             chart_layout.removeWidget(self.readout);hint_row.addWidget(self.readout,1)
-            info=tab('估算说明',self.show_cost_explanation,checkable=False);info.setObjectName('report_daily_explanation');info.setFixedHeight(20);hint_row.addWidget(info);info.setVisible(not agy);chart_layout.addLayout(hint_row)
+            info=tab('估算说明',self.show_cost_explanation,checkable=False);info.setObjectName('report_daily_explanation');info.setFixedHeight(20);hint_row.addWidget(info);info.setVisible(has_cost or show_rates);chart_layout.addLayout(hint_row)
             self.body_height=self.stats.height()+94+18+17+20
         else:
             series=self._series()
@@ -832,6 +847,10 @@ class DailyReport(QWidget):
         if r:
             if self.page=='overview':
                 self.stats.report=r;self.stats.update();self.hour_total.setText(compact_tokens(r.get('yesterday_total',0)));self.daily_cost.set_data(r,self.snapshot.get('projects'))
+                has_cost=self._has_yesterday_cost(r)
+                self.daily_cost.setVisible(has_cost);self.hour_total.setVisible(not has_cost)
+                self.readout.setText(self._daily_readout(r))
+                self.readout.setVisible(bool(r.get('supports_rates',self.snapshot.get('provider')!='antigravity')))
                 if self.plot.report!=r:self.plot.set_data(r)
                 self._update_analogy(r)
             elif self.page=='models' and cached.get('model_state')!=(self._data_revision,self.period,self.selected_model):

@@ -17,6 +17,10 @@ LABEL = 'Antigravity'
 PREFIX = SOURCE + ':'
 HOOK_GROUP = 'bailong-desktop-pet'
 EVENTS = ('PreInvocation', 'PreToolUse', 'Stop')
+PRE_TOOL_MATCHER = 'run_command|write_to_file|replace_file_content|multi_replace_file_content|write_file|edit_file'
+LEGACY_PRE_TOOL_MATCHERS = (
+    'run_command|write_to_file|replace_file_content|multi_replace_file_content',
+)
 FRAME_LIMIT = 2048
 SUCCESS_REASONS = frozenset(('model_stop', 'no_tool_call', 'executor_termination_reason_no_tool_call'))
 CANCEL_REASONS = frozenset(('cancelled','canceled','user_cancelled','user_canceled',
@@ -62,6 +66,97 @@ def desktop_open():
                    for process in psutil.process_iter(['name']))
     except (OSError, psutil.Error):
         return None
+
+
+def desktop_process(pid):
+    import psutil
+    try:
+        return psutil.Process(pid).name().casefold() == 'antigravity.exe'
+    except (psutil.Error, OSError):
+        return False
+
+
+def connection_diagnostics(profile, *, bridge=None, quota=None, snapshot=None,
+                           enabled=False, presence=None, now=None):
+    import time
+    from antigravity_sidecar import endpoint as sidecar_endpoint, installed_token
+    profile = Path(profile)
+    now = time.time() if now is None else now
+    items = []
+
+    exe = executable()
+    if presence is True:
+        app_state, app_summary = 'available', '正在运行'
+    elif presence is False:
+        app_state = 'unavailable' if exe is None else 'degraded'
+        app_summary = '未检测到桌面端安装' if exe is None else '已安装，当前未运行'
+    elif exe is None:
+        app_state, app_summary = 'unavailable', '未检测到桌面端安装'
+    else:
+        app_state, app_summary = 'unknown', '已安装'
+    items.append({'key': 'app', 'title': 'Antigravity 桌面端', 'state': app_state, 'summary': app_summary})
+
+    hook_ok = False
+    hook_file = profile / '.gemini' / 'config' / 'hooks.json'
+    try:
+        doc = json.loads(hook_file.read_bytes().decode('utf-8-sig'))
+        group = doc.get(HOOK_GROUP) if isinstance(doc, dict) else None
+        hook_ok = isinstance(group, dict) and group.get('enabled') is True
+    except (OSError, ValueError, UnicodeDecodeError, RecursionError):
+        hook_ok = False
+    listening = bool(bridge and getattr(bridge, 'server', None) and bridge.server.isListening())
+    if not enabled:
+        bridge_state = 'degraded' if hook_ok else 'unknown'
+        bridge_summary = '监听未开启（Hook 已配置）' if hook_ok else '监听未开启'
+    elif hook_ok and listening:
+        bridge_state, bridge_summary = 'available', 'Hook 与命名管道监听正常'
+    elif hook_ok:
+        bridge_state, bridge_summary = 'degraded', 'Hook 已配置，管道未监听'
+    else:
+        bridge_state, bridge_summary = 'unavailable', 'Hook 未配置或已停用'
+    items.append({'key': 'bridge', 'title': '状态桥接 Hook', 'state': bridge_state, 'summary': bridge_summary})
+
+    token = installed_token(profile)
+    ep = sidecar_endpoint(profile)
+    observed = quota.get('observed') if isinstance(quota, dict) else None
+    fresh = isinstance(observed, (int, float)) and not isinstance(observed, bool) and now - observed <= 120
+    pools = (quota or {}).get('pools') or {} if isinstance(quota, dict) else {}
+    if fresh and pools:
+        quota_state, quota_summary = 'available', f'额度桥接正常（{len(pools)} 个模型组）'
+    elif isinstance(quota, dict) and not pools:
+        quota_state, quota_summary = 'degraded', '已连接，账户未提供额度窗口'
+    elif ep is not None and observed:
+        quota_state, quota_summary = 'degraded', 'Sidecar 就绪，额度待刷新'
+    elif ep is not None:
+        quota_state, quota_summary = 'degraded', 'Sidecar 已启动，等待读取额度'
+    elif token is not None:
+        quota_state, quota_summary = 'degraded', '额度桥接已安装，等待 Antigravity 加载'
+    else:
+        quota_state, quota_summary = 'unavailable', '未配置额度桥接'
+    items.append({'key': 'quota', 'title': '额度桥接', 'state': quota_state, 'summary': quota_summary})
+
+    conv_dir = profile / '.gemini' / 'antigravity' / 'conversations'
+    try:
+        with os.scandir(conv_dir) as entries:
+            has_dbs = any(entry.name.endswith('.db') for entry in entries)
+    except OSError:
+        has_dbs = False
+    if isinstance(snapshot, dict) and not snapshot.get('unavailable'):
+        count = snapshot.get('readable_files', 0)
+        if snapshot.get('partial'):
+            usage_state, usage_summary = 'degraded', f'部分会话受限（已读取 {count} 个库）'
+        else:
+            usage_state, usage_summary = 'available', f'本机记录正常（{count} 个会话库）'
+    elif isinstance(snapshot, dict) and snapshot.get('unavailable'):
+        usage_state, usage_summary = 'unavailable', '暂无可读会话用量记录'
+    elif has_dbs:
+        usage_state, usage_summary = 'unknown', '发现会话库，等待读取'
+    else:
+        usage_state, usage_summary = 'unknown', '暂无会话库'
+    items.append({'key': 'usage', 'title': '用量与历史统计', 'state': usage_state, 'summary': usage_summary})
+
+    summary = '\n'.join(f"{item['title']}：{item['summary']}" for item in items)
+    return {'items': items, 'summary': summary}
 
 
 def conversation_overview(profile, sessions):
@@ -147,13 +242,17 @@ def configure_hooks(profile, state_dir, enabled):
     handlers = {event: {'type': 'command', 'command': f'{command} -EventName {event} -PipeName {pipe}', 'timeout': 3}
                 for event in EVENTS}
     group = {event: [handler] for event, handler in handlers.items()}
-    group['PreToolUse'] = [{'matcher': 'run_command|write_to_file|replace_file_content|multi_replace_file_content',
-                           'hooks': [handlers['PreToolUse']]}]
+    group['PreToolUse'] = [{'matcher': PRE_TOOL_MATCHER, 'hooks': [handlers['PreToolUse']]}]
     group['enabled'] = enabled
+    accepted_groups = [group]
+    for legacy_matcher in LEGACY_PRE_TOOL_MATCHERS:
+        legacy_group = dict(group)
+        legacy_group['PreToolUse'] = [{'matcher': legacy_matcher, 'hooks': [handlers['PreToolUse']]}]
+        accepted_groups.append(legacy_group)
     previous = document.get(HOOK_GROUP)
     if HOOK_GROUP not in document and not enabled:
         return config
-    if HOOK_GROUP in document and (not isinstance(previous, dict) or dict(previous, enabled=enabled) != group):
+    if HOOK_GROUP in document and (not isinstance(previous, dict) or dict(previous, enabled=enabled) not in accepted_groups):
         raise ValueError('已存在同名 Antigravity Hook，请先在 Antigravity 检查该条目。')
     if enabled:
         script.parent.mkdir(parents=True, exist_ok=True)
@@ -213,6 +312,13 @@ class Tasks:
                 'write_to_file': ('edit', '正在编辑文件'),
                 'replace_file_content': ('edit', '正在编辑文件'),
                 'multi_replace_file_content': ('edit', '正在编辑文件'),
+                'write_file': ('edit', '正在编辑文件'),
+                'edit_file': ('edit', '正在编辑文件'),
+                'read_file': ('research', '正在查阅资料'),
+                'view_file': ('research', '正在查阅资料'),
+                'grep_search': ('research', '正在查阅资料'),
+                'find_by_name': ('research', '正在查阅资料'),
+                'search_web': ('research', '正在查阅资料'),
             }.get(tool if isinstance(tool, str) else '', ('tool', '正在使用工具'))
             status = dict(common, kind='status', state='working', activity=activity, display=display)
         else:

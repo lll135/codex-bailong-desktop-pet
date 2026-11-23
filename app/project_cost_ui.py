@@ -437,7 +437,8 @@ class ProjectCosts(QWidget):
     def show_pricing(self):
         from pricing_ui import open_editor
         models={m['model'] for p in self.data.get('ranges',{}).get('all',[]) for m in p['model_usage']}
-        pet=self.owner_pet();open_editor(self,models,getattr(pet,'refresh_tokens',None))
+        pet=self.owner_pet();refresh=getattr(pet,'refresh_pricing_targets',None) or getattr(pet,'refresh_tokens',None)
+        open_editor(self,models,refresh)
     def show_export(self):
         from cost_details import export_rows,encode_export
         rows=list(export_rows(self.data,self.period,self.search.text(),self.archive))

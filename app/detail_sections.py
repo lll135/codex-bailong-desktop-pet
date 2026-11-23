@@ -3,8 +3,9 @@ from theme_registry import color as theme_color
 from theme_runtime import set_theme_style,theme_style_source
 from PySide6.QtCore import Qt,QRectF,QPointF,QEvent,QUrl,QTimer
 from PySide6.QtGui import QPainter,QColor,QPen,QDesktopServices
-from PySide6.QtWidgets import QWidget,QLabel,QVBoxLayout,QHBoxLayout,QTabWidget,QScrollArea,QFrame,QStackedWidget,QApplication,QToolButton
+from PySide6.QtWidgets import QWidget,QLabel,QVBoxLayout,QHBoxLayout,QGridLayout,QTabWidget,QScrollArea,QFrame,QStackedWidget,QApplication,QToolButton
 from compact_bubble import font,FONT_CSS,source_button,Announcement,action_button
+from enhanced_core import clean_text
 from reset_watch import pending_reset,schedule_text,account_reset_text,local_time,SOURCE_URL
 from ring_widgets import draw_metric_icon
 from quota_summary_data import quota_items,today_tokens
@@ -12,13 +13,148 @@ from ui_theme import hide_scrollbars
 from token_calendar import compact_tokens
 from datetime import datetime
 from reset_watch import BEIJING
-import math
+import math,time
 
 
 def detail_label(value,size=11,muted=False,strong=False):
     label=QLabel(str(value));label.setTextFormat(Qt.TextFormat.PlainText);label.setWordWrap(True)
     set_theme_style(label,FONT_CSS+f'font-size:{size}px;font-weight:{600 if strong else 500};color:{"#706879" if muted else "#393343"};background:transparent;')
     return label
+
+
+def _format_token_part(value):
+    if type(value) is not int or value<0:return '未知'
+    try:return compact_tokens(value)
+    except OverflowError:return '>999T'
+
+
+def _format_request_time(stamp,now=None):
+    if not isinstance(stamp,(int,float)) or isinstance(stamp,bool) or not math.isfinite(stamp) or stamp<=0:
+        return '暂无记录'
+    now=time.time() if now is None else now
+    target=datetime.fromtimestamp(stamp)
+    if target.date()==datetime.fromtimestamp(now).date():return target.strftime('%H:%M')
+    return target.strftime('%m-%d %H:%M')
+
+
+class ContextUsageBar(QWidget):
+    def __init__(self,percent,parent=None):
+        super().__init__(parent);self.percent=percent;self.setFixedHeight(4)
+    def paintEvent(self,event):
+        from ui_theme import TRACK,ACCENT,QUOTA_LOW
+        p=QPainter(self);p.setRenderHint(QPainter.RenderHint.Antialiasing);p.setPen(Qt.PenStyle.NoPen)
+        rect=QRectF(self.rect())
+        p.setBrush(QColor(theme_color(TRACK)));p.drawRoundedRect(rect,2,2)
+        if isinstance(self.percent,(int,float)) and not isinstance(self.percent,bool) and math.isfinite(self.percent) and self.percent>0:
+            ratio=max(0.,min(1.,self.percent/100.))
+            fill=QRectF(rect.x(),rect.y(),max(4.,rect.width()*ratio),rect.height())
+            p.setBrush(QColor(theme_color(QUOTA_LOW if self.percent>=80 else ACCENT)))
+            p.drawRoundedRect(fill,2,2)
+
+
+class RecentRequestCard(QWidget):
+    def __init__(self,bubble,choices,selected,parent=None):
+        super().__init__(parent)
+        self.setObjectName('antigravity_recent_request')
+        set_theme_style(self,'QWidget#antigravity_recent_request{background:#f5f2f7;border-radius:7px;}')
+        layout=QVBoxLayout(self);layout.setContentsMargins(9,7,9,8);layout.setSpacing(5)
+        current=next((c for c in choices if c['session']==selected),None)
+        request=current.get('request') if current else None
+
+        top=QHBoxLayout();top.setContentsMargins(0,0,0,0);top.setSpacing(6)
+        heading=detail_label('最近请求',11,False,True);heading.setObjectName('recent_request_title')
+        top.addWidget(heading)
+        if current and current.get('active'):
+            state=QLabel('进行中');state.setObjectName('recent_request_active')
+            set_theme_style(state,FONT_CSS+'font-size:10px;font-weight:600;color:#75618d;background:transparent;')
+            top.addWidget(state)
+        top.addStretch(1)
+        stamp=detail_label(_format_request_time(request.get('stamp') if request else None),10,True)
+        stamp.setObjectName('recent_request_time');stamp.setAlignment(Qt.AlignmentFlag.AlignRight|Qt.AlignmentFlag.AlignVCenter)
+        top.addWidget(stamp)
+        layout.addLayout(top)
+
+        if len(choices)>1:
+            from choice_controls import ChoiceCombo
+            combo=ChoiceCombo();combo.setObjectName('antigravity_recent_session')
+            combo.setFixedHeight(26);combo.setAccessibleName('选择 Antigravity 会话')
+            blocked=combo.blockSignals(True)
+            for item in choices:
+                name=clean_text(item['title'],42)
+                if item.get('active'):name+='（进行中）'
+                combo.addItem(name,item['session'])
+            combo.setCurrentIndex(max(0,combo.findData(selected)))
+            combo.blockSignals(blocked)
+            combo.currentIndexChanged.connect(lambda idx:bubble.select_antigravity_session(combo.itemData(idx)))
+            layout.addWidget(combo)
+        elif current is not None:
+            name=detail_label(clean_text(current['title'],64),11,False,False)
+            name.setObjectName('antigravity_recent_session_name')
+            layout.addWidget(name)
+        else:
+            empty=detail_label('暂无 Antigravity 会话记录',10,True)
+            empty.setObjectName('antigravity_recent_empty')
+            layout.addWidget(empty)
+            return
+
+        grid=QGridLayout();grid.setContentsMargins(0,2,0,0);grid.setHorizontalSpacing(10);grid.setVerticalSpacing(4)
+        for idx,(key,title) in enumerate((('uncached','未缓存输入'),('cache_read','缓存读取'),('cache_write','缓存写入'),('output','输出'))):
+            raw=request.get(key) if isinstance(request,dict) else None
+            shown=_format_token_part(raw)
+            cell=QWidget();cell_row=QHBoxLayout(cell);cell_row.setContentsMargins(0,0,0,0);cell_row.setSpacing(4)
+            k_label=detail_label(title,10,True)
+            v_label=detail_label(shown,11,shown=='未知',shown!='未知')
+            v_label.setObjectName('recent_'+key)
+            v_label.setAlignment(Qt.AlignmentFlag.AlignRight|Qt.AlignmentFlag.AlignVCenter)
+            if shown!='未知':v_label.setAccessibleDescription(f'{title} {raw:,} Token')
+            cell_row.addWidget(k_label);cell_row.addStretch(1);cell_row.addWidget(v_label)
+            grid.addWidget(cell,idx//2,idx%2)
+        layout.addLayout(grid)
+
+        if isinstance(request,dict):
+            model=clean_text(str(request.get('model') or ''),40)
+            total_shown=_format_token_part(request.get('total'))
+            rate=request.get('rate')
+            rate_shown=f'{rate:,.1f} tok/s' if isinstance(rate,(int,float)) and not isinstance(rate,bool) and math.isfinite(rate) and rate>0 else ''
+            meta_parts=[part for part in (model,'合计 '+total_shown if total_shown!='未知' else '',rate_shown) if part]
+            if meta_parts:
+                meta=detail_label('  '.join(meta_parts),10,True);meta.setObjectName('recent_request_meta')
+                layout.addWidget(meta)
+
+        turn=current.get('turn') if current else None
+        if isinstance(turn,dict):
+            sep=QFrame();sep.setFixedHeight(1);set_theme_style(sep,'background:#e4dfea;border:0;');layout.addWidget(sep)
+            turn_box=QWidget();turn_box.setObjectName('antigravity_turn_summary')
+            tlay=QVBoxLayout(turn_box);tlay.setContentsMargins(0,2,0,0);tlay.setSpacing(3)
+            trow=QHBoxLayout();trow.setContentsMargins(0,0,0,0);trow.setSpacing(6)
+            trow.addWidget(detail_label('本轮合计',10,False,True))
+            trow.addStretch(1)
+            ttot=_format_token_part(turn.get('total'))
+            tcount=turn.get('requests') or 1
+            tmeta=detail_label(f'{tcount} 次请求  合计 {ttot}' if ttot!='未知' else f'{tcount} 次请求',10,True)
+            tmeta.setObjectName('turn_summary_total');tmeta.setAlignment(Qt.AlignmentFlag.AlignRight|Qt.AlignmentFlag.AlignVCenter)
+            trow.addWidget(tmeta);tlay.addLayout(trow)
+            parts_text='  '.join(f'{lbl} {_format_token_part(turn.get(key))}' for key,lbl in (('uncached','未缓存'),('cache_read','读缓存'),('cache_write','写缓存'),('output','输出')))
+            parts_lbl=detail_label(parts_text,10,True);parts_lbl.setObjectName('turn_summary_parts')
+            tlay.addWidget(parts_lbl)
+            layout.addWidget(turn_box)
+
+        ctx=request.get('context') if isinstance(request,dict) else None
+        ctx_box=QWidget();ctx_box.setObjectName('antigravity_context_usage')
+        clay=QVBoxLayout(ctx_box);clay.setContentsMargins(0,2,0,0);clay.setSpacing(3)
+        crow=QHBoxLayout();crow.setContentsMargins(0,0,0,0);crow.setSpacing(6)
+        crow.addWidget(detail_label('上下文占用',10,False,True));crow.addStretch(1)
+        if isinstance(ctx,dict) and type(ctx.get('used')) is int and type(ctx.get('limit')) is int and ctx['limit']>0:
+            pct=ctx.get('percent')
+            ctx_text=f"{compact_tokens(ctx['used'])} / {compact_tokens(ctx['limit'])}  {pct:g}%"
+            muted_ctx=False
+        else:
+            pct=None;ctx_text='未知';muted_ctx=True
+        cval=detail_label(ctx_text,10,muted_ctx,not muted_ctx)
+        cval.setObjectName('context_usage_value');cval.setAlignment(Qt.AlignmentFlag.AlignRight|Qt.AlignmentFlag.AlignVCenter)
+        crow.addWidget(cval);clay.addLayout(crow)
+        clay.addWidget(ContextUsageBar(pct))
+        layout.addWidget(ctx_box)
 
 
 class DetailInfoButton(QToolButton):
@@ -151,7 +287,11 @@ class DetailsTabs(QTabWidget):
             if known:value.setAccessibleDescription(f'本机累计 {total:,} Token')
             row.addWidget(value);tokens.addWidget(stat)
             if snapshot.get('partial'):tokens.addWidget(detail_label('部分日志暂不可读，统计可能不完整。',10,True))
-        if agy:tokens.addWidget(detail_label('本机 Antigravity 请求记录，合计未缓存输入、缓存读写与输出。',10,True))
+        if agy:
+            choices=bubble.antigravity_session_choices()
+            selected=bubble.selected_antigravity_session(choices)
+            tokens.addWidget(RecentRequestCard(bubble,choices,selected))
+            tokens.addWidget(detail_label('本机 Antigravity 请求记录，合计未缓存输入、缓存读写与输出。',10,True))
         else:
             tokens.addWidget(detail_label('柱显示用量，线显示回合均速。\n均速包含思考、工具和等待，不代表纯生成速度。',10,True))
             tokens.addWidget(detail_label('输入包含缓存，输出包含推理，不重复相加。',10,True))
@@ -243,7 +383,7 @@ def explanation_page(bubble):
     area=hide_scrollbars(DetailScrollArea());area.setFrameShape(QFrame.Shape.NoFrame);area.setWidgetResizable(True)
     set_theme_style(area,'QScrollArea{border:0;background:transparent;}');set_theme_style(area.viewport(),'background:transparent;')
     body=QWidget();set_theme_style(body,'background:transparent;');layout=QVBoxLayout(body);layout.setContentsMargins(0,0,2,0);layout.setSpacing(10)
-    for title,text in [
+    topics=[
         ('额度与重置','周额度和5小时额度分别显示剩余比例，各自按旁边的时间重置。倒计时结束后点击刷新，查看最新额度。'),
         ('Token 用量','今日统计从本机零点开始，累计统计包含这台电脑上能读取的历史。输入包含缓存，输出包含推理。'),
         ('图表与速率','柱子表示 Token 用量，曲线表示回合平均速率。24小时按小时统计，其他范围按天统计。悬停可看中位速率和样本量。回合用时包含思考、工具执行和等待，所以更适合观察任务处理快慢。'),
@@ -251,7 +391,10 @@ def explanation_page(bubble):
         ('会话与提醒','点击任务可以跳到对应会话。完成后的提醒可点击状态图标确认，也会在 Codex 中读到完成回复后自动确认。'),
         ('额外重置公告','这里显示 Codex Resets 发布的额外重置安排，点击来源按钮可查看原文。实际余额以刷新后的账户额度为准。'),
         ('卡片与人物','胶囊点击后打开正常卡片，详情按钮打开大卡片。可以在设置里隐藏人物、切换极简额度圆，或让面板和人物分开移动。'),
-        ('设置与更新','主题圆点击后先预览，保存后保留，离开设置则放弃未保存的主题。下载素材、刷新数据等按钮立即执行；程序更新由你点击下载并安装。')]:
+        ('设置与更新','主题圆点击后先预览，保存后保留，离开设置则放弃未保存的主题。下载素材、刷新数据等按钮立即执行；程序更新由你点击下载并安装。')]
+    if getattr(bubble,'antigravity_enabled',False):
+        topics.append(('多来源与 Antigravity','开启 Antigravity 监听后，可通过卡片标题旁箭头切换来源。Antigravity 统计来自本机对话库，包含未缓存输入、缓存读取、缓存写入、输出、服务端生成历史速率、上下文占用与按工作区统计的项目成本；不含实时流式速率与额外重置公告。'))
+    for title,text in topics:
         group=QWidget();row=QVBoxLayout(group);row.setContentsMargins(0,0,0,0);row.setSpacing(4)
         row.addWidget(detail_label(title,12,False,True));row.addWidget(detail_label(text,11,True));layout.addWidget(group)
     layout.addStretch();area.setWidget(body);outer.addWidget(area,1);return page

@@ -11,12 +11,24 @@ from datetime import datetime
 WEEK=604800
 
 
-def migrate(db):
-    db.execute('''CREATE TABLE IF NOT EXISTS quota_observations (
-        stamp REAL NOT NULL, deadline REAL NOT NULL, remaining REAL NOT NULL,
-        source TEXT NOT NULL, plan TEXT NOT NULL DEFAULT '', boundary REAL,
-        reset_kind TEXT NOT NULL DEFAULT '',
-        PRIMARY KEY(stamp,deadline,remaining))''')
+def migrate(db,*,multi_plan=False):
+    pk='PRIMARY KEY(plan,stamp,deadline,remaining)' if multi_plan else 'PRIMARY KEY(stamp,deadline,remaining)'
+    existing=db.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='quota_observations'").fetchone()
+    if multi_plan and existing and 'PRIMARY KEY(plan,' not in (existing[0] or ''):
+        db.execute('ALTER TABLE quota_observations RENAME TO _quota_observations_old')
+        db.execute(f'''CREATE TABLE quota_observations (
+            stamp REAL NOT NULL, deadline REAL NOT NULL, remaining REAL NOT NULL,
+            source TEXT NOT NULL, plan TEXT NOT NULL DEFAULT '', boundary REAL,
+            reset_kind TEXT NOT NULL DEFAULT '',
+            {pk})''')
+        db.execute('INSERT OR IGNORE INTO quota_observations SELECT stamp,deadline,remaining,source,plan,boundary,reset_kind FROM _quota_observations_old')
+        db.execute('DROP TABLE _quota_observations_old')
+    else:
+        db.execute(f'''CREATE TABLE IF NOT EXISTS quota_observations (
+            stamp REAL NOT NULL, deadline REAL NOT NULL, remaining REAL NOT NULL,
+            source TEXT NOT NULL, plan TEXT NOT NULL DEFAULT '', boundary REAL,
+            reset_kind TEXT NOT NULL DEFAULT '',
+            {pk})''')
     db.execute('CREATE INDEX IF NOT EXISTS quota_observation_time ON quota_observations(stamp)')
     db.execute('CREATE TABLE IF NOT EXISTS quota_history_files (path TEXT PRIMARY KEY, offset INTEGER NOT NULL)')
     db.execute('CREATE TABLE IF NOT EXISTS quota_cycle_snapshots (id TEXT PRIMARY KEY, record TEXT NOT NULL)')
@@ -28,17 +40,25 @@ def valid_sample(stamp,deadline,remaining):
             stamp<deadline<=stamp+WEEK+300 and 0<=remaining<=100)
 
 
-def store(db,stamp,deadline,remaining,source='log',plan='',boundary=None,reset_kind=''):
+def store(db,stamp,deadline,remaining,source='log',plan='',boundary=None,reset_kind='',*,multi_plan=False):
     if not valid_sample(stamp,deadline,remaining):return False
     if boundary is not None and not (isinstance(boundary,(int,float)) and
             math.isfinite(boundary) and deadline-WEEK-300<=boundary<=stamp):boundary=None
-    db.execute('''INSERT INTO quota_observations VALUES(?,?,?,?,?,?,?)
-        ON CONFLICT(stamp,deadline,remaining) DO UPDATE SET
-        source=CASE WHEN excluded.source='live' THEN 'live' ELSE source END,
-        plan=CASE WHEN excluded.plan!='' THEN excluded.plan ELSE plan END,
-        boundary=COALESCE(excluded.boundary,boundary),
-        reset_kind=CASE WHEN excluded.reset_kind!='' THEN excluded.reset_kind ELSE reset_kind END''',
-        (stamp,deadline,remaining,source,str(plan or '').lower()[:40],boundary,reset_kind))
+    if multi_plan:
+        db.execute('''INSERT INTO quota_observations VALUES(?,?,?,?,?,?,?)
+            ON CONFLICT(plan,stamp,deadline,remaining) DO UPDATE SET
+            source=CASE WHEN excluded.source='live' THEN 'live' ELSE source END,
+            boundary=COALESCE(excluded.boundary,boundary),
+            reset_kind=CASE WHEN excluded.reset_kind!='' THEN excluded.reset_kind ELSE reset_kind END''',
+            (stamp,deadline,remaining,source,str(plan or '').lower()[:40],boundary,reset_kind))
+    else:
+        db.execute('''INSERT INTO quota_observations VALUES(?,?,?,?,?,?,?)
+            ON CONFLICT(stamp,deadline,remaining) DO UPDATE SET
+            source=CASE WHEN excluded.source='live' THEN 'live' ELSE source END,
+            plan=CASE WHEN excluded.plan!='' THEN excluded.plan ELSE plan END,
+            boundary=COALESCE(excluded.boundary,boundary),
+            reset_kind=CASE WHEN excluded.reset_kind!='' THEN excluded.reset_kind ELSE reset_kind END''',
+            (stamp,deadline,remaining,source,str(plan or '').lower()[:40],boundary,reset_kind))
     return True
 
 
@@ -189,11 +209,15 @@ def recent_reference_totals(db,samples,drop,estimate):
     return totals
 
 
-def summarize_cycles(db,now=None,complete=True,pending=False):
+def summarize_cycles(db,now=None,complete=True,pending=False,*,plan=None):
     from quota_workload import profile
     now=time.time() if now is None else now
-    rows=db.execute('''SELECT stamp,deadline,remaining,source,plan,boundary,reset_kind
-        FROM quota_observations WHERE stamp<=? ORDER BY stamp,source''',(now,)).fetchall()
+    if plan is None:
+        rows=db.execute('''SELECT stamp,deadline,remaining,source,plan,boundary,reset_kind
+            FROM quota_observations WHERE stamp<=? ORDER BY stamp,source''',(now,)).fetchall()
+    else:
+        rows=db.execute('''SELECT stamp,deadline,remaining,source,plan,boundary,reset_kind
+            FROM quota_observations WHERE stamp<=? AND plan=? ORDER BY stamp,source''',(now,str(plan or '').lower()[:40])).fetchall()
     periods=partition(rows);result=[]
     for c in periods:
         samples=c['samples']
@@ -400,7 +424,8 @@ def visible_anomaly(snapshot,windows,now=None,decline_threshold=10,increase_thre
     if not warning or -decline_threshold<warning.get('change',0)<increase_threshold or any(snapshot.get(k) for k in ('partial','unavailable','refresh_failed')):return None
     if history.get('pending') or history.get('partial'):return None
     week=next((w for w in windows if w.get('name')=='一周'),None)
-    if not week or week.get('plan')!=warning['plan']:return None
+    week_plan=str(week.get('plan') or week.get('group') or '').lower()[:40] if week else ''
+    if not week or week_plan!=warning['plan']:return None
     from reset_watch import epoch
     deadline=epoch(week.get('resetsAt'))
     if not deadline or deadline<=now or abs(deadline-warning['reset_at'])>1800:return None
@@ -431,7 +456,8 @@ def visible_quota_change(snapshot,windows,now=None,decline_threshold=10,increase
     observing=reference.get('observing')
     if not observing and (reference['change'] is None or abs(reference['change'])<REFERENCE_BADGE_MIN):return None
     week=next((w for w in windows if w.get('name')=='一周'),None)
-    if not week or week.get('plan')!=current.get('plan'):return None
+    week_plan=str(week.get('plan') or week.get('group') or '').lower()[:40] if week else ''
+    if not week or week_plan!=current.get('plan'):return None
     from reset_watch import epoch
     deadline=epoch(week.get('resetsAt'));reset=current.get('reset_at')
     if not deadline or deadline<=now or not reset or abs(deadline-reset)>1800:return None

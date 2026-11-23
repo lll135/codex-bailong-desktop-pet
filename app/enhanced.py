@@ -76,6 +76,7 @@ class ActivityThread(QThread):
         self.read_acknowledgements=ReadAcknowledgements()
         self.live_reader=None;self.live_events=queue.SimpleQueue()
         self.last_health_scan=-10
+        self._monitor_failed=False
         from activity_targets import ActivityTargets
         self.targets=ActivityTargets();self.context_lock=threading.Lock();self.displayed=();self.visited=();self.last_active_scan=-20
     def run(self):
@@ -167,6 +168,10 @@ class ActivityThread(QThread):
                     name=self.conversation_names.get(session_id(event.get('session','')))
                     if name:event['title']=name;event['conversation_name']=name
                     self.event.emit(event)
+                if self._monitor_failed:
+                    self._monitor_failed=False
+                    if not any(event.get('kind')=='status' for event in batch):
+                        self.event.emit(self._recovery_status())
                 if self.desktop_open is not True:self.read_acknowledgements.first_read.clear()
                 if self.desktop_open is True and time.monotonic()-self.last_read_scan>=2:
                     self.last_read_scan=time.monotonic()
@@ -180,6 +185,7 @@ class ActivityThread(QThread):
                     values=dict(tasks=self.tail.health,completion=dict(self.tail.health),read=read,compaction=self.live_reader.health_snapshot())
                     self.event.emit(dict(kind='connection_health',capabilities=values))
             except Exception:
+                self._monitor_failed=True
                 self.event.emit({'kind':'monitor_error','text':'状态监听暂时不可用，稍后重试'})
                 self.event.emit(dict(kind='connection_health',capabilities={key:dict(state='unavailable',code='logs_unreadable') for key in ('tasks','completion')}))
             due=time.monotonic()-self.last_token_scan>=30 or self.token_wake.is_set()
@@ -195,6 +201,14 @@ class ActivityThread(QThread):
         if self.token_reader:self.token_reader.join(4)
         if self.presence_reader:self.presence_reader.join(1)
         if self.live_reader:self.live_reader.join(2)
+    def _recovery_status(self):
+        active=[(sid,s) for sid,s in self.tail.reducer.sessions.items() if not s.source_hidden and (not s.done or s.compacting)]
+        if active:
+            sid,s=max(active,key=lambda pair:pair[1].updated)
+            return self.tail.reducer._status(sid,s)
+        return dict(kind='status',state='idle' if self.tail.files else 'offline',
+                    text='已找到本机 Codex 会话，等待新消息' if self.tail.files else '尚未找到本机 Codex 会话，请打开 Codex 并发送消息',
+                    title='Codex 状态',active=0,waiting=0)
     def set_context(self,displayed,visited=()):
         with self.context_lock:self.displayed=tuple(displayed);self.visited=tuple(visited)
     def set_antigravity_context(self,sessions,turns=None):

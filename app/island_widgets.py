@@ -87,7 +87,7 @@ class StatusIsland(QWidget):
         ink=QFontMetricsF(self.text.font()).tightBoundingRect(text)
         width=max(1,math.ceil(ink.width())+2);group=16+5+width
         left=(self.width()-group)/2;target=(left,left+21,float(width))
-        self.setAccessibleName('Codex '+full+'；点击打开正常面板')
+        self.setAccessibleName(getattr(self.icon,'source_label','Codex')+' '+full+'；点击打开正常面板')
         if self._ready and old==text and self._target==target:return
         from settings_controls import motion_enabled
         running=self.animation.state()!=QAbstractAnimation.State.Stopped
@@ -123,10 +123,21 @@ class StatusIsland(QWidget):
     def resizeEvent(self,event):
         super().resizeEvent(event)
         if hasattr(self,'text'):self.refresh()
+    def mousePressEvent(self,event):
+        if event.button()==Qt.MouseButton.LeftButton:
+            window=self.window()
+            if hasattr(window,'card_pointer_press'):window.card_pointer_press(event)
+            event.accept();return
+        super().mousePressEvent(event)
+    def mouseMoveEvent(self,event):
+        window=self.window()
+        if hasattr(window,'card_pointer_move') and window.card_pointer_move(event):event.accept();return
+        super().mouseMoveEvent(event)
     def mouseReleaseEvent(self,event):
         window=self.window()
-        if hasattr(window,'card_pointer_release') and window.card_pointer_release():event.accept();return
-        if event.button()==Qt.MouseButton.LeftButton:self.expand.emit();event.accept()
+        if event.button()==Qt.MouseButton.LeftButton and hasattr(window,'card_pointer_release') and window.card_pointer_release():event.accept();return
+        if event.button()==Qt.MouseButton.LeftButton and self.rect().contains(event.position().toPoint()):self.expand.emit();event.accept();return
+        super().mouseReleaseEvent(event)
     def paintEvent(self,event):
         p=QPainter(self);self.paint_dial(p)
     def paint_dial(self,p):
@@ -220,6 +231,18 @@ class QuotaSatellite(QToolButton):
         p.setPen(QColor(theme_color(ON_ISLAND)))
         for font,text,origin in self._text_runs:
             p.setFont(font);p.drawText(origin,text)
+    def mousePressEvent(self,event):
+        window=QWidget.window(self)
+        if hasattr(window,'card_pointer_press'):window.card_pointer_press(event)
+        super().mousePressEvent(event)
+    def mouseMoveEvent(self,event):
+        window=QWidget.window(self)
+        if hasattr(window,'card_pointer_move') and window.card_pointer_move(event):self.setDown(False);event.accept();return
+        super().mouseMoveEvent(event)
+    def mouseReleaseEvent(self,event):
+        window=QWidget.window(self)
+        if event.button()==Qt.MouseButton.LeftButton and hasattr(window,'card_pointer_release') and window.card_pointer_release():self.setDown(False);event.accept();return
+        super().mouseReleaseEvent(event)
 
 class MinimalQuota(QuotaSatellite):
     """A single readable quota circle; dragging never expands the panel."""
@@ -228,11 +251,3 @@ class MinimalQuota(QuotaSatellite):
         self.setAccessibleName(self.accessibleName().replace('展开详情','打开正常卡片')+'；可拖动；右键切换模式')
     def paintEvent(self,event):
         p=QPainter(self);p.scale(self.width()/40,self.height()/40);self.paint_dial(p)
-    def mousePressEvent(self,event):
-        self.parentWidget().window().card_pointer_press(event);super().mousePressEvent(event)
-    def mouseMoveEvent(self,event):
-        if self.parentWidget().window().card_pointer_move(event):self.setDown(False);event.accept();return
-        super().mouseMoveEvent(event)
-    def mouseReleaseEvent(self,event):
-        if self.parentWidget().window().card_pointer_release():self.setDown(False);event.accept();return
-        super().mouseReleaseEvent(event)

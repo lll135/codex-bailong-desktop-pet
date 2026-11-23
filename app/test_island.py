@@ -202,4 +202,164 @@ class ChartEntryTests(unittest.TestCase):
         points=[QPointF(0,0),QPointF(10,20),QPointF(20,0)]
         self.assertEqual(trace_head(points,.25),QPointF(5,10));self.assertEqual(trace_head(points,.75),QPointF(15,10))
 
+
+class CapsuleDragTests(unittest.TestCase):
+    def setUp(self):
+        from pathlib import Path
+        from unittest.mock import patch
+        from PIL import Image
+        import json,tempfile
+        from desktop import DesktopPet
+        from material_store import MaterialStore
+        base=Path(os.environ.get('LOCALAPPDATA') or tempfile.gettempdir())/'bailong-capsule-drag-test'
+        asset_dir=base/'assets'
+        asset_dir.mkdir(parents=True,exist_ok=True)
+        manifest_file=asset_dir/'素材清单.json'
+        idle_file=asset_dir/'idle.webp'
+        for p in (manifest_file,idle_file):
+            p.unlink(missing_ok=True)
+            self.addCleanup(p.unlink,missing_ok=True)
+        manifest_file.write_text(json.dumps({
+            'idle':{'id':'idle','file':'idle.webp','playbackFile':'idle.webp','durationMs':400},
+            'variants':[],
+        }),encoding='utf-8')
+        Image.new('RGBA',(32,32),(255,255,255,255)).save(idle_file,'WEBP')
+        for fname in (
+            'settings.json','runtime.json','task-notifications.json','task-notifications.sqlite3',
+            'task-notifications.sqlite3-wal','task-notifications.sqlite3-shm',
+            'local-reset-evidence.json','codex-connection-check.json','antigravity-hook.ps1',
+        ):
+            p=base/fname
+            p.unlink(missing_ok=True)
+            self.addCleanup(p.unlink,missing_ok=True)
+        self._patches=[
+            *[patch(f'{mod}.{key}',base/('settings.json' if key=='CONFIG' else ''))
+              for mod in ('enhanced','desktop') for key in ('CONFIG','STATE_DIR')],
+            patch.object(MaterialStore,'available',return_value=True),
+            patch.object(MaterialStore,'tier_root',return_value=asset_dir),
+        ]
+        for p in self._patches:
+            p.start()
+            self.addCleanup(p.stop)
+        self.pet=DesktopPet(monitor=False)
+        def cleanup_pet():
+            self.pet.close()
+            if getattr(self.pet,'player',None) is not None and getattr(self.pet.player,'thread',None) is not None:
+                self.pet.player.thread.join(2)
+            APP.processEvents()
+        self.addCleanup(cleanup_pet)
+        self.pet.tick.stop();self.pet.motion_timer.stop()
+        self.pet.apply_settings(dict(bubble_mode='mini',panel_detached=False,character_visible=True,wandering=False,random_actions=False,drag_physics=False),save=False)
+        self.pet.show();self.finish()
+        area=self.pet.screen().availableGeometry()
+        self.pet.move(area.center()-QPoint(self.pet.width()//2,self.pet.height()//2))
+        self.pet.position_bubble();APP.processEvents()
+
+    def finish(self):
+        for _ in range(4):
+            self.pet.bubble.size_transition.complete()
+            self.pet.bubble.size_transition.release_landing()
+            APP.processEvents()
+
+    def _drag(self,widget,delta=QPoint(-40,-25)):
+        from PySide6.QtCore import QPointF
+        from PySide6.QtGui import QMouseEvent
+        start=widget.mapToGlobal(widget.rect().center());end=start+delta
+        for kind,gpos,btn,btns in (
+            (QEvent.Type.MouseButtonPress,start,Qt.MouseButton.LeftButton,Qt.MouseButton.LeftButton),
+            (QEvent.Type.MouseMove,end,Qt.MouseButton.NoButton,Qt.MouseButton.LeftButton),
+            (QEvent.Type.MouseButtonRelease,end,Qt.MouseButton.LeftButton,Qt.MouseButton.NoButton),
+        ):
+            ev=QMouseEvent(kind,QPointF(widget.mapFromGlobal(gpos)),QPointF(gpos),btn,btns,Qt.KeyboardModifier.NoModifier)
+            APP.sendEvent(widget,ev)
+        self.finish()
+
+    def test_attached_mini_capsule_drags_pet_across_all_controls_and_preserves_clicks(self):
+        p=self.pet;b=p.bubble
+        shortcuts=[];b.shortcutRequested.connect(lambda:shortcuts.append(True))
+
+        # StatusIsland drag moves both pet and bubble without expanding; click expands.
+        pet0,bub0=p.pos(),b.pos()
+        self._drag(b.island)
+        self.assertTrue(b.is_island())
+        self.assertEqual(p.pos()-pet0,QPoint(-40,-25))
+        self.assertEqual(b.pos()-bub0,QPoint(-40,-25))
+        QTest.mouseClick(b.island,Qt.MouseButton.LeftButton,pos=b.island.rect().center());self.finish()
+        self.assertFalse(b.is_island())
+
+        # QuotaSatellite drag moves both without expanding; click expands.
+        b.set_mode('mini');self.finish()
+        pet0,bub0=p.pos(),b.pos()
+        self._drag(b._island_quota,QPoint(25,-15))
+        self.assertTrue(b.is_island());self.assertFalse(b.expanded)
+        self.assertEqual(p.pos()-pet0,QPoint(25,-15))
+        self.assertEqual(b.pos()-bub0,QPoint(25,-15))
+        QTest.mouseClick(b._island_quota,Qt.MouseButton.LeftButton);self.finish()
+        self.assertFalse(b.is_island());self.assertTrue(b.expanded)
+
+        # Shortcut button drag moves both without firing shortcutRequested; click fires it.
+        b.set_mode('mini');self.finish()
+        pet0,bub0=p.pos(),b.pos()
+        self._drag(b.shortcut_button,QPoint(-20,15))
+        self.assertFalse(shortcuts);self.assertTrue(b.is_island())
+        self.assertEqual(p.pos()-pet0,QPoint(-20,15))
+        self.assertEqual(b.pos()-bub0,QPoint(-20,15))
+        QTest.mouseClick(b.shortcut_button,Qt.MouseButton.LeftButton);APP.processEvents()
+        self.assertEqual(len(shortcuts),1)
+
+        # StatusIndicator drag moves both without acknowledging unread; click acknowledges.
+        b.status_indicator.unread=[('sess-drag','turn-1')];b.status_indicator._sync()
+        pet0,bub0=p.pos(),b.pos()
+        self._drag(b.status_indicator,QPoint(-15,-15))
+        self.assertEqual(b.status_indicator.unread,[('sess-drag','turn-1')])
+        self.assertEqual(p.pos()-pet0,QPoint(-15,-15))
+        self.assertEqual(b.pos()-bub0,QPoint(-15,-15))
+        QTest.mouseClick(b.status_indicator,Qt.MouseButton.LeftButton);APP.processEvents()
+        self.assertEqual(b.status_indicator.unread,[])
+
+        # Plain click on idle StatusIndicator via native window expands island.
+        pos_in_win=b.status_indicator.mapTo(b,b.status_indicator.rect().center())
+        QTest.mouseClick(b.windowHandle(),Qt.MouseButton.LeftButton,pos=pos_in_win);self.finish()
+        self.assertFalse(b.is_island())
+
+    def test_attached_minimal_and_no_move_and_edge_undock(self):
+        p=self.pet;b=p.bubble
+        # Minimal mode drags both pet and circle without opening normal card; click opens normal.
+        p.apply_settings(dict(bubble_mode='minimal'),save=False);self.finish()
+        pet0,bub0=p.pos(),b.pos()
+        self._drag(b.minimal_quota,QPoint(-30,-20))
+        self.assertTrue(b.is_minimal())
+        self.assertEqual(p.pos()-pet0,QPoint(-30,-20))
+        self.assertEqual(b.pos()-bub0,QPoint(-30,-20))
+        QTest.mouseClick(b.minimal_quota,Qt.MouseButton.LeftButton);self.finish()
+        self.assertFalse(b.is_minimal())
+
+        # no_move=True prevents attached capsule dragging.
+        p.apply_settings(dict(bubble_mode='mini',no_move=True),save=False);self.finish()
+        pet0,bub0=p.pos(),b.pos()
+        self._drag(b.island,QPoint(-30,-20))
+        self.assertEqual((p.pos(),b.pos()),(pet0,bub0))
+
+        # Dragging docked MinimalQuota away from screen edge undocks and restores mini capsule.
+        p.apply_settings(dict(bubble_mode='mini',no_move=False,edge_docking=True),save=False);self.finish()
+        area=p.screen().availableGeometry();p.move(area.left(),area.top()+200)
+        self.assertTrue(p.edge_dock.try_dock())
+        p.edge_dock.animation.stop();p.edge_dock._advance(1.);self.finish()
+        self.assertTrue(b.is_minimal())
+        self._drag(b.minimal_quota,QPoint(90,20))
+        self.assertFalse(p.edge_dock.active)
+        self.assertGreater(p.x(),area.left()+50)
+        self.assertTrue(b.is_island());self.assertEqual(p.settings['bubble_mode'],'mini')
+
+    def test_detached_mini_capsule_drags_across_all_controls_without_moving_pet(self):
+        p=self.pet;b=p.bubble
+        p.apply_settings(dict(panel_detached=True,bubble_mode='mini'),save=False);self.finish()
+        for target,delta in ((b.island,QPoint(-30,-20)),(b._island_quota,QPoint(-25,15)),(b.shortcut_button,QPoint(20,-20))):
+            pet0=p.pos();bub0=b.pos()
+            self._drag(target,delta)
+            self.assertEqual(p.pos(),pet0)
+            self.assertEqual(b.pos()-bub0,delta)
+            self.assertTrue(b.is_island())
+            self.assertIsInstance(p.settings['card_anchor'],dict)
+
 if __name__=='__main__':unittest.main()

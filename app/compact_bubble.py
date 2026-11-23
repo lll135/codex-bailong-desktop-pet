@@ -484,6 +484,7 @@ class CompactBubble(Bubble):
         self.card_source='codex';self.antigravity_enabled=False;self.antigravity_status_text=''
         self.antigravity_snapshot=None;self.antigravity_token_busy=False
         self.antigravity_quota=None;self.antigravity_quota_group=''
+        self.antigravity_selected_session=''
         self._short_status_timer=QTimer(self)
         self._short_status_timer.setSingleShot(True)
         self._short_status_timer.timeout.connect(self.refresh_status)
@@ -592,7 +593,12 @@ class CompactBubble(Bubble):
         else:self.set_mode('auto')
     def show_explanations(self):
         from detail_sections import explanation_page
-        if getattr(self,'_explanation_page',None) is None:self._explanation_page=explanation_page(self)
+        if getattr(self,'_explanation_page',None) is None or getattr(self,'_explanation_agy',None)!=self.antigravity_enabled:
+            old=getattr(self,'_explanation_page',None)
+            if old is not None:
+                self.editor_stack.removeWidget(old);old.deleteLater()
+            self._explanation_page=explanation_page(self)
+            self._explanation_agy=self.antigravity_enabled
         self.show_page('help',self._explanation_page)
         for area in self._explanation_page.findChildren(__import__('PySide6.QtWidgets',fromlist=['QScrollArea']).QScrollArea):area.verticalScrollBar().setValue(0)
     def _task_layout_changed(self):
@@ -665,6 +671,22 @@ class CompactBubble(Bubble):
             if key=='wandering' and self.movement_locked:shortcut.setEnabled(False);shortcut.setToolTip('移动已锁定，请在设置中解除锁定')
         self._navigation_widget=toolbar
         return toolbar
+    def _editor_external_is_antigravity(self):
+        owner=self.owner_pet()
+        chat=getattr(owner,'chat_window',None)
+        if chat is None:
+            current=self.editor_stack.currentWidget() if hasattr(self,'editor_stack') else None
+            if hasattr(current,'session') and hasattr(current,'root'):chat=current
+        if chat is not None and hasattr(chat,'session'):
+            service=chat.session.get('service') if isinstance(chat.session,dict) else None
+            if not service and hasattr(chat,'root'):
+                try:
+                    from chat_config import load_chat_config
+                    service=load_chat_config(chat.root).get('service')
+                except OSError:service=None
+            if service:return service=='antigravity'
+        return self.card_source=='antigravity'
+
     def _redraw_editor(self):
         self._redrawing=True
         self._last_compact_surface=None
@@ -676,11 +698,16 @@ class CompactBubble(Bubble):
             header=QWidget(self.content);header.setFixedHeight(27);row=QHBoxLayout(header);row.setContentsMargins(0,0,0,0);row.setSpacing(6)
             row.addWidget(self.status_indicator);self.status_indicator.show()
             self.editor_title=QLabel();row.addWidget(self.editor_title,1)
-            codex=action_button('external','打开 Codex',keyboard=True,hit_size=25);codex.setObjectName('open_codex');codex.clicked.connect(lambda:self.codexRequested.emit());row.addWidget(codex)
+            codex=action_button('external','打开 Codex',keyboard=True,hit_size=25);codex.setObjectName('open_codex')
+            codex.clicked.connect(lambda:(self.antigravityRequested if self._editor_external_is_antigravity() else self.codexRequested).emit())
+            row.addWidget(codex)
             self.editor_codex_button=codex
             close=action_button('collapse','收起到正常卡片',keyboard=True,hit_size=26);close.clicked.connect(self.collapse_to_normal);row.addWidget(close)
             self.add(header);self.add(self.navigation());self.add(self.editor_stack)
         self.editor_title.setText('白龙 '+({'chat':'聊天','settings':'设置','help':'使用说明'}.get(self.panel_page,'详情')))
+        agy_external=self._editor_external_is_antigravity()
+        target_label='打开 Antigravity' if agy_external else '打开 Codex'
+        self.editor_codex_button.setToolTip(target_label);self.editor_codex_button.setAccessibleName(target_label)
         self.editor_codex_button.setVisible(self.panel_page=='chat')
         tabs=getattr(self,'_navigation_segments',None)
         if tabs:
@@ -798,7 +825,7 @@ class CompactBubble(Bubble):
         heading=self._status_heading()
         active=sum(v['state'] in ('thinking','working','responding','waiting') for v in self.roster.items.values())
         active=max(active,int(self.status_indicator.active))
-        count=f'{active} 个会话正在进行' if heading=='Codex' and active>1 else ''
+        count=f'{active} 个会话正在进行' if heading in ('Codex','Antigravity') and active>1 else ''
         # Reserve the visible actions and layout gaps before measuring the title.
         margins=self.layout.contentsMargins();inner=self.content.width()-margins.left()-margins.right()
         actions=sum(button.width() for button in self._header_actions)
@@ -819,6 +846,7 @@ class CompactBubble(Bubble):
         title.setFixedWidth(CodexWordmarkButton.MARK_WIDTH if wordmark else metrics.horizontalAdvance(text)+2)
         cluster.setFixedSize(icon_width+title.width(),28)
         app='Antigravity' if self.card_source=='antigravity' else 'Codex'
+        self.status_indicator.set_source_label(app)
         title.setToolTip('\n'.join(filter(None,(heading,count,'点击打开 '+app))))
         title.setAccessibleName('；'.join(filter(None,(heading,count,'点击打开 '+app))))
         header.layout().activate()
@@ -830,6 +858,39 @@ class CompactBubble(Bubble):
     def waiting_text(self):
         if self.card_source=='antigravity':return self.antigravity_status_text or '等待 Antigravity 新任务'
         return '等待 Codex 新消息' if self.roster.items else self.status
+
+    def antigravity_session_choices(self):
+        from antigravity import SOURCE,source_of
+        snapshot=self.antigravity_snapshot if isinstance(self.antigravity_snapshot,dict) else {}
+        active_items=[v for v in self.roster.items.values()
+                      if source_of(v['session'])==SOURCE and v['state'] in ('thinking','working','responding','waiting')]
+        active_items.sort(key=lambda v:(-v.get('updated',0),v['session']))
+        active_ids={v['session'] for v in active_items}
+        unread_ids=[sid for sid,_ in reversed(self.status_indicator.unread) if source_of(sid)==SOURCE]
+        recent_ids=[sid for sid in (snapshot.get('recent_sessions') or ()) if source_of(sid)==SOURCE]
+        ordered=list(dict.fromkeys([*(v['session'] for v in active_items),*unread_ids,*recent_ids]))[:12]
+        titles=snapshot.get('session_titles') if isinstance(snapshot.get('session_titles'),dict) else {}
+        requests=snapshot.get('session_requests') if isinstance(snapshot.get('session_requests'),dict) else {}
+        turns=snapshot.get('session_turns') if isinstance(snapshot.get('session_turns'),dict) else {}
+        choices=[]
+        for sid in ordered:
+            item=self.roster.items.get(sid) or {}
+            title=self.roster.names.get(sid) or titles.get(sid) or item.get('title') or ('Antigravity 会话 '+sid[-4:])
+            entries=requests.get(sid) or ()
+            choices.append({'session':sid,'title':clean_text(title,160),'active':sid in active_ids,'request':entries[0] if entries else None,'turn':turns.get(sid)})
+        return choices
+
+    def selected_antigravity_session(self,choices=None):
+        if choices is None:choices=self.antigravity_session_choices()
+        if any(c['session']==self.antigravity_selected_session for c in choices):return self.antigravity_selected_session
+        return choices[0]['session'] if choices else ''
+
+    def select_antigravity_session(self,sid):
+        sid=str(sid or '')
+        if sid==self.antigravity_selected_session:return
+        self.antigravity_selected_session=sid
+        if self.expanded and self.card_source=='antigravity' and self.panel_page=='status':
+            self.redraw()
 
     def show_source_menu(self, button):
         from popup_motion import ContextMenu
@@ -888,6 +949,7 @@ class CompactBubble(Bubble):
         if self.is_minimal():return
         if self.is_island():
             if self.island is None:self.redraw();return
+            self.status_indicator.set_source_label('Antigravity' if self.card_source=='antigravity' else 'Codex')
             from conversation_roster import LABELS
             selected,extra=self.roster.selection(self.status_indicator.unread,balanced=self.antigravity_enabled)
             self.status_indicator.session_summary='/'.join('压缩' if v.get('compacting') and v['state']!='waiting' else LABELS.get(v['state'],'待命').removesuffix('中') for v in selected)+(' +'+str(extra) if extra else '')
@@ -897,16 +959,25 @@ class CompactBubble(Bubble):
             self.redraw();return
         if not self.size_transition.preparing and self._task_layout_changed():
             self.size_transition.begin(status_layout=True)
+            if self.expanded and self.card_source=='antigravity' and self.details_tabs is not None and self._details_key!=self._details_revision():
+                self.redraw();self.size_transition.commit();return
             self._update_header();self._refresh_conversation_rows();self._fit_height();self.size_transition.commit();return
         self._update_header()
         self._refresh_conversation_rows()
+        if self.expanded and self.card_source=='antigravity' and self.details_tabs is not None and self._details_key!=self._details_revision():
+            self.redraw();return
         self.setAccessibleName(self.heading+'；'+self.status)
     def _details_revision(self):
         import json
         snapshot=self.selected_snapshot()
         tokens=None if snapshot is None else {key:snapshot.get(key) for key in ('unavailable','all_total','total','partial')}
         windows,caption=self.selected_quota_data()
-        payload=(windows,caption,self.reset_snapshot,self.reset_feed_error,self.reset_error_details) if self.card_source=='codex' else (windows,caption)
+        if self.card_source=='codex':
+            payload=(windows,caption,self.reset_snapshot,self.reset_feed_error,self.reset_error_details)
+        else:
+            choices=self.antigravity_session_choices()
+            selected=self.selected_antigravity_session(choices)
+            payload=(windows,caption,selected,[(c['session'],c['title'],c['active'],c['request'],c.get('turn')) for c in choices])
         return json.dumps((self.card_source,tokens,payload),sort_keys=True,ensure_ascii=False,default=str)
     def _status_header(self):
         header=self._status_headers.get(self.expanded)
@@ -1049,8 +1120,8 @@ class CompactBubble(Bubble):
             front='tokens' if agy else self.dashboard_page
             from quota_history import visible_quota_change
             settings=getattr(self.owner_pet(),'settings',{})
-            warning=None if agy else visible_quota_change(snapshot,windows,decline_threshold=settings.get('quota_decline_threshold',10),
-                                   increase_threshold=settings.get('quota_increase_threshold',15))
+            warning=visible_quota_change(snapshot,windows,decline_threshold=settings.get('quota_decline_threshold',10),
+                                         increase_threshold=settings.get('quota_increase_threshold',15))
             container=QWidget(self.content)
             gap=self.card_pixels(8)
             columns=max(0,width-2*side_margin-gap)
@@ -1090,8 +1161,9 @@ class CompactBubble(Bubble):
             if getattr(self,'live_rate_card',None) is None:self.live_rate_card=LiveRateCard(getattr(self,'live_output_rate',None),footer)
             else:
                 self.live_rate_card.setParent(footer)
-            self.live_rate_card.set_data(None if agy else getattr(self,'live_output_rate',None))
-            self.live_rate_card.setEnabled(not agy)
+            rate_value=((snapshot or {}).get('historical_rate') or {'historical':True,'rate':None,'details':[]}) if agy else getattr(self,'live_output_rate',None)
+            self.live_rate_card.set_data(rate_value)
+            self.live_rate_card.setEnabled(True)
             self.live_rate_card.expanded=self.expanded;self.live_rate_card.setFixedSize(left_width,footer_height)
             footer_row.addWidget(self.live_rate_card,1);self.live_rate_card.show()
             daily.setFixedSize(right_width,footer_height)
@@ -1156,10 +1228,17 @@ class CompactBubble(Bubble):
         if inactive_deck is not None:inactive_deck.deleteLater()
         from quota_history import visible_quota_change
         settings=getattr(self.owner_pet(),'settings',{})
-        if self.card_source=='codex':
-            quota.set_anomaly(visible_quota_change(self.token_snapshot,self.windows,
-                decline_threshold=settings.get('quota_decline_threshold',10),increase_threshold=settings.get('quota_increase_threshold',15)))
+        windows,_=self.selected_quota_data()
         snapshot=self.selected_snapshot()
+        quota.set_anomaly(visible_quota_change(snapshot,windows,
+            decline_threshold=settings.get('quota_decline_threshold',10),increase_threshold=settings.get('quota_increase_threshold',15)))
+        if self.card_source=='antigravity':
+            card=getattr(self,'live_rate_card',None)
+            if card is not None:
+                from shiboken6 import isValid
+                if isValid(card):
+                    card.setEnabled(True)
+                    card.set_data((snapshot or {}).get('historical_rate') or {'historical':True,'rate':None,'details':[]})
         deck.snapshot=snapshot
         chart=deck.pages.get('tokens')
         if chart is not None:
@@ -1324,7 +1403,9 @@ class CompactBubble(Bubble):
         if icon!='refresh':shortcut.setIcon(action_icon(icon,island=True))
         set_theme_style(shortcut,circle_style+'QToolButton:focus{border:0;background:#eee8f3;}')
         shortcut.clicked.connect(self.shortcutRequested.emit);row.addWidget(shortcut);self.shortcut_button=shortcut
+        shortcut.installEventFilter(self)
         if key=='refresh':shortcut.set_busy(self.refresh_busy)
+        self.status_indicator.set_source_label('Antigravity' if self.card_source=='antigravity' else 'Codex')
         self.status_indicator.set_island(True);self.island=StatusIsland(self.status_indicator,cluster)
         self.island.setFixedSize(island_width,circle)
         from conversation_roster import LABELS
@@ -1451,7 +1532,7 @@ class CompactBubble(Bubble):
     def content_geometry(self,size=None,docked=True):
         owner=self.owner_pet();size=self.content.size() if size is None else size
         if owner is None:return QRectF(self.x(),self.y(),size.width(),size.height()).toRect()
-        if hasattr(owner,'card_geometry') and (owner.settings.get('panel_detached') or not owner.settings.get('character_visible',True)):return owner.card_geometry(size)
+        if hasattr(owner,'card_geometry') and (owner.settings.get('panel_detached') or getattr(owner,'_materials_missing',False) or not owner.settings.get('character_visible',True)):return owner.card_geometry(size)
         edge=getattr(owner,'edge_dock',None)
         if docked and edge and self.is_minimal() and (edge.active or edge.amount>0):
             return edge.card_geometry(size,edge.target_amount if self.size_transition.preparing else None)
@@ -1487,6 +1568,10 @@ class CompactBubble(Bubble):
         super().resizeEvent(event)
         if not self._redrawing and not self._fitting_height:self._position_now()
     def hideEvent(self,event):
+        if self._card_press and self._card_press[0]=='attached' and self._card_dragged:
+            owner=self.owner_pet()
+            if owner:owner.cancel_pointer()
+        self._card_press=None;self._card_dragged=False
         if hasattr(self,'size_transition'):self.size_transition.cancel()
         super().hideEvent(event)
     def showEvent(self,event):
@@ -1507,24 +1592,54 @@ class CompactBubble(Bubble):
         owner=self.owner_pet()
         if owner and hasattr(owner,'context_menu'):owner.context_menu(event.globalPos());event.accept()
         else:super().contextMenuEvent(event)
-    def card_pointer_press(self,event):
+    def _card_drag_mode(self):
         owner=self.owner_pet()
-        if event.button()==Qt.MouseButton.LeftButton and owner and (owner.settings.get('panel_detached') or not owner.settings.get('character_visible',True)) and not self.size_transition.running:
-            self._card_press=(event.globalPosition().toPoint(),self.pos());self._card_dragged=False;return True
+        if owner is None or self.size_transition.running:return None
+        if owner.settings.get('panel_detached') or getattr(owner,'_materials_missing',False) or not owner.settings.get('character_visible',True):return 'card'
+        if self.is_compact() and not owner.settings.get('no_move'):return 'attached'
+        return None
+    def card_pointer_press(self,event):
+        if event.button()==Qt.MouseButton.LeftButton:
+            mode=self._card_drag_mode()
+            if mode=='card':
+                self._card_press=('card',event.globalPosition().toPoint(),self.pos());self._card_dragged=False;return True
+            if mode=='attached':
+                self._card_press=('attached',event.globalPosition().toPoint(),self.owner_pet().pos());self._card_dragged=False;return True
         return False
     def card_pointer_move(self,event):
         if self._card_press and event.buttons()&Qt.MouseButton.LeftButton:
-            point,start=self._card_press;delta=event.globalPosition().toPoint()-point
+            mode,point,start=self._card_press;pointer=event.globalPosition().toPoint();delta=pointer-point
             if delta.manhattanLength()>5 or self._card_dragged:
-                self._card_dragged=True;owner=self.owner_pet();owner.move_card(start+delta);return True
+                owner=self.owner_pet()
+                if owner is None:self._card_press=None;self._card_dragged=False;return False
+                if mode=='card':
+                    self._card_dragged=True;owner.move_card(start+delta);return True
+                if mode=='attached':
+                    if owner.settings.get('no_move'):self._card_press=None;self._card_dragged=False;return False
+                    if not self._card_dragged:self._card_dragged=True;owner.begin_attached_drag(point,start)
+                    owner.move_attached_drag(pointer);return True
         return False
     def card_pointer_release(self):
-        dragged=self._card_dragged;self._card_press=None;self._card_dragged=False
-        if dragged:self.owner_pet().save_settings()
+        press=self._card_press;dragged=self._card_dragged;self._card_press=None;self._card_dragged=False
+        if dragged:
+            owner=self.owner_pet()
+            if owner is not None:
+                if press and press[0]=='attached':owner.finish_attached_drag()
+                else:owner.save_settings()
         return dragged
+    def eventFilter(self,watched,event):
+        if watched is self.shortcut_button:
+            kind=event.type()
+            if kind==QEvent.Type.MouseButtonPress and event.button()==Qt.MouseButton.LeftButton:
+                self.card_pointer_press(event)
+            elif kind==QEvent.Type.MouseMove and self.card_pointer_move(event):
+                watched.setDown(False);event.accept();return True
+            elif kind==QEvent.Type.MouseButtonRelease and event.button()==Qt.MouseButton.LeftButton and self.card_pointer_release():
+                watched.setDown(False);event.accept();return True
+        return super().eventFilter(watched,event)
     def mousePressEvent(self,event):
         if not self.card_pointer_press(event):super().mousePressEvent(event)
     def mouseMoveEvent(self,event):
         if not self.card_pointer_move(event):super().mouseMoveEvent(event)
     def mouseReleaseEvent(self,event):
-        if not self.card_pointer_release():super().mouseReleaseEvent(event)
+        if not (event.button()==Qt.MouseButton.LeftButton and self.card_pointer_release()):super().mouseReleaseEvent(event)

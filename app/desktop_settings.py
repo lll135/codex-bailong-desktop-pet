@@ -250,6 +250,7 @@ class SettingsDialog(QDialog):
         layer.currentIndexChanged.connect(lambda:self.edited('window_layer'))
         for key,title in [('codex_focus_only','仅在 Codex 前台时显示'),('mouse_through','鼠标穿透（可从托盘恢复）')]:
             self.check(advanced,key,title)
+        self.fields['codex_focus_only'].setToolTip('仅在受监听的应用（Codex；开启 Antigravity 监听时含 Antigravity）处于前台时显示桌宠。')
         self.fullscreen_mode=self.presentation_segments([('关闭','off'),('仅视频','video'),('游戏和视频','game_video')])
         advanced.addRow('全屏时让位',self.fullscreen_mode);self.fields['fullscreen_yield_mode']=self.fullscreen_mode;self.field_tabs['fullscreen_yield_mode']=0;self.field_titles['fullscreen_yield_mode']='全屏时让位'
         self.fullscreen_mode.currentIndexChanged.connect(lambda:self.edited('fullscreen_yield_mode'))
@@ -305,6 +306,13 @@ class SettingsDialog(QDialog):
             connection.addRow(self.antigravity_quota_button)
             self.antigravity_hook_status=QLabel('配置后可从卡片左上角切换来源。')
             self.antigravity_hook_status.setWordWrap(True);connection.addRow(self.antigravity_hook_status)
+            self.antigravity_health_label=QLabel()
+            self.antigravity_health_label.setObjectName('antigravity_health_summary')
+            self.antigravity_health_label.setTextFormat(Qt.TextFormat.PlainText)
+            self.antigravity_health_label.setWordWrap(True)
+            set_theme_style(self.antigravity_health_label,f'font-size:11px;color:{MUTED};')
+            connection.addRow(self.antigravity_health_label)
+            self.refresh_antigravity_health()
         self.section(connection,'启动与退出',None)
         self.startup=SettingsSwitchRow('登录 Windows 时启动');connection.addRow(self.startup)
         self.field_tabs['startup']=self._building_index;self.field_titles['startup']='开机启动'
@@ -313,7 +321,7 @@ class SettingsDialog(QDialog):
         self.field_tabs['codex_startup']=self._building_index;self.field_titles['codex_startup']='随 Codex 启动'
         self.codex_startup.toggled.connect(lambda:self.edited('codex_startup'))
         self.check(connection,'codex_exit','Codex 关闭后退出桌宠')
-        self.fields['codex_exit'].setToolTip('确认 Codex 桌面端已退出后，约 6 秒关闭桌宠。')
+        self.fields['codex_exit'].setToolTip('确认受监听的桌面端（Codex；开启 Antigravity 监听时含 Antigravity）均已退出后，约 6 秒关闭桌宠。')
         self.section(connection,'状态显示',None)
         self.check(connection,'commentary','显示 Codex 工作过程与回复摘要')
         self.check(connection,'status_actions','人物响应任务状态')
@@ -381,12 +389,37 @@ class SettingsDialog(QDialog):
         self.antigravity_hook_button.setEnabled(True)
         self.antigravity_stop_button.setEnabled(True)
         self.antigravity_quota_button.setEnabled(True)
+        self.refresh_antigravity_health()
+
+    def refresh_antigravity_health(self):
+        label=getattr(self,'antigravity_health_label',None)
+        if label is None:return
+        from pathlib import Path
+        from antigravity import connection_diagnostics
+        bubble=getattr(self.pet,'bubble',None)
+        settings=getattr(self.pet,'settings',None) or {}
+        diag=connection_diagnostics(
+            Path.home(),
+            bridge=getattr(self.pet,'antigravity_bridge',None),
+            quota=getattr(bubble,'antigravity_quota',None),
+            snapshot=getattr(bubble,'antigravity_snapshot',None),
+            enabled=bool(settings.get('antigravity_enabled')),
+            presence=(getattr(self.pet,'_assistant_presence',None) or {}).get('antigravity'),
+        )
+        label.setText(diag['summary'])
 
     def open_pricing(self):
         from pricing_ui import open_editor
-        data=getattr(self.pet.bubble,'token_snapshot',{}).get('projects',{})
-        models={m['model'] for p in data.get('ranges',{}).get('all',[]) for m in p['model_usage']}
-        open_editor(self.tabs,models,self.pet.refresh_tokens)
+        bubble=getattr(self.pet,'bubble',None)
+        models=set()
+        for snap in (getattr(bubble,'token_snapshot',None),getattr(bubble,'antigravity_snapshot',None)):
+            if not isinstance(snap,dict):continue
+            data=snap.get('projects') or {}
+            models.update(m['model'] for p in data.get('ranges',{}).get('all',[]) for m in p.get('model_usage',[]))
+            for row in (snap.get('report') or {}).get('daily_models') or ():
+                if isinstance(row,dict) and row.get('model'):models.add(row['model'])
+        refresh=getattr(self.pet,'refresh_pricing_targets',self.pet.refresh_tokens)
+        open_editor(self.tabs,models,refresh)
 
     def build_page_3(self):
         pet=self.pet
@@ -602,6 +635,7 @@ class SettingsDialog(QDialog):
         if changed or status!=(self.draft.dirty,self.draft.conflicts):self.update_draft_state()
         if self.pet.bubble.panel_page=='settings' and not self._saving:self.preview_theme_draft()
         if changed:self.request_size_preview()
+        self.refresh_antigravity_health()
 
     def request_size_preview(self):
         if self._visit_active and self.draft and hasattr(self.pet,'preview_surface_sizes') and not self._size_preview_timer.isActive():
@@ -754,11 +788,26 @@ class SettingsDialog(QDialog):
         self.connection_job=ConnectionJob(self);self.connection_job.report.connect(self.connection_done)
         self.connection_job.finished.connect(lambda:self.connection_button.setEnabled(True));self.connection_job.start()
     def connection_done(self,report):
+        from pathlib import Path
         from desktop import STATE_DIR
         from desktop_core import atomic_json
         self.pet.update_connection_health(report.get('capabilities',{}))
+        summary=report.get('summary','检查完成')
+        if (getattr(self.pet,'settings',None) or {}).get('antigravity_enabled'):
+            from antigravity import connection_diagnostics
+            bubble=getattr(self.pet,'bubble',None)
+            diag=connection_diagnostics(
+                Path.home(),
+                bridge=getattr(self.pet,'antigravity_bridge',None),
+                quota=getattr(bubble,'antigravity_quota',None),
+                snapshot=getattr(bubble,'antigravity_snapshot',None),
+                enabled=True,
+                presence=(getattr(self.pet,'_assistant_presence',None) or {}).get('antigravity'),
+            )
+            summary+='\n\nAntigravity 状态\n'+diag['summary']
+        self.refresh_antigravity_health()
         path=STATE_DIR/'codex-connection-check.json'
         try:atomic_json(path,report);note='\n\n报告已保存：'+str(path)
         except OSError:note='\n\n报告文件保存失败；检测结果仍可查看。'
-        self.connection_text.setPlainText(report.get('summary','检查完成')+note)
+        self.connection_text.setPlainText(summary+note)
     def closeEvent(self,event):self.end_theme_preview();self.hide();event.ignore()

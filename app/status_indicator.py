@@ -23,7 +23,7 @@ class StatusIndicator(QWidget):
         self.state='idle';self.active=0;self.waiting=0;self.completed=False
         self.busy_since=self.clock();self.completed_at=None;self.seen=deque(maxlen=64)
         self.unread=[];self.store=None;self.ledger=None;self.acknowledged_at=None;self.excluded_sessions=set()
-        self.island=False;self._last_signature=None
+        self.island=False;self.source_label='Codex';self._last_signature=None
         self.completion_times={};self.session_summary=''
         self._hidden_at=self.clock();self._motion_offset=0.;self._motion_holds={'hidden'}
         self.motion=GlyphMotion(self._motion_now())
@@ -169,13 +169,22 @@ class StatusIndicator(QWidget):
         if self.completed or self.state=='complete':return 'complete'
         return 'idle'
 
+    def set_source_label(self,label):
+        value='Antigravity' if str(label)=='Antigravity' else 'Codex'
+        if getattr(self,'source_label','Codex')==value:return
+        self.source_label=value;self._sync();self.update()
+
     def _sync(self):
         visual=self.visual()
         self.motion.set_state(visual,self._motion_now(),animate=self.isVisible() or 'surface' in self._motion_holds)
-        signature=(visual,self.state,self.active,self.waiting,len(self.unread))
+        src=getattr(self,'source_label','Codex')
+        signature=(visual,self.state,self.active,self.waiting,len(self.unread),src)
         if signature==self._last_signature:
             self._sync_timer();return
-        labels={'attention':'Codex 任务完成 · 点击确认已读，或在对应对话中回复','busy':'Codex 正在执行任务','waiting':'Codex 等待你输入或确认操作','paused':'Codex 任务已中断','warning':'Codex 未连接或监听异常','complete':'Codex 任务已完成 · 已确认','idle':'Codex 待命'}
+        if src=='Codex':
+            labels={'attention':'Codex 任务完成 · 点击确认已读，或在对应对话中回复','busy':'Codex 正在执行任务','waiting':'Codex 等待你输入或确认操作','paused':'Codex 任务已中断','warning':'Codex 未连接或监听异常','complete':'Codex 任务已完成 · 已确认','idle':'Codex 待命'}
+        else:
+            labels={'attention':f'{src} 任务完成，点击确认已读','busy':f'{src} 正在执行任务','waiting':f'{src} 等待你输入或确认操作','paused':f'{src} 任务已中断','warning':f'{src} 未连接或监听异常','complete':f'{src} 任务已完成，已确认','idle':f'{src} 待命'}
         text=labels[visual]
         if visual=='attention' and len(self.unread)>1:text+=f'\n{len(self.unread)} 条完成提醒待确认'
         if visual=='attention' and self.is_busy():text+='，还有任务正在执行'
@@ -247,7 +256,19 @@ class StatusIndicator(QWidget):
     def hideEvent(self,event):
         self.freeze_motion('hidden');super().hideEvent(event)
 
+    def mousePressEvent(self,event):
+        if event.button()==Qt.MouseButton.LeftButton and (self.island or self.unread):
+            window=self.window()
+            if hasattr(window,'card_pointer_press'):window.card_pointer_press(event)
+            event.accept();return
+        super().mousePressEvent(event)
+    def mouseMoveEvent(self,event):
+        window=self.window()
+        if hasattr(window,'card_pointer_move') and window.card_pointer_move(event):event.accept();return
+        super().mouseMoveEvent(event)
     def mouseReleaseEvent(self,event):
+        window=self.window()
+        if event.button()==Qt.MouseButton.LeftButton and hasattr(window,'card_pointer_release') and window.card_pointer_release():event.accept();return
         if event.button()==Qt.MouseButton.LeftButton and self.rect().contains(event.position().toPoint()):
             if self.acknowledge():event.accept();return
         super().mouseReleaseEvent(event)

@@ -56,12 +56,14 @@ class DesktopPet(EnhancedPet):
         self._interactive_action=False;self._manual_action=False;self._priority=0
         self._hit_image=None;self.throwing=False;self.velocity=(0.,0.)
         self._pointer_pressed=False;self._pointer_epoch=0
+        self._attached_card_drag=False;self._attached_card_undocked=False
         self.drag_samples=deque(maxlen=12);self.press_feedback=0;self.buffer_until=0
         self._drag_pointer=None;self._last_drag_move=0.
         self.pending_completion=None;self.settings_dialog=None;self.chat_window=None
         self.reactions=StatusReactions(time.monotonic());self.last_reaction=None
         self.antigravity_bridge=None;self._assistant_presence={};self._monitor_assistants=monitor
         self.antigravity_data=None;self._antigravity_data_refreshing=False;self._antigravity_refresh_targets=set()
+        self.antigravity_low_notified=set();self._antigravity_project_range=None
         self.character_dir=STATE_DIR/'characters';self.character_dir.mkdir(exist_ok=True)
         self.created_at=time.monotonic();self.decode_error=None
         super().__init__(monitor)
@@ -164,30 +166,47 @@ class DesktopPet(EnhancedPet):
 
     def poll_codex_presence(self):
         from codex_connection import is_wsl_source
-        if is_wsl_source():
+        agy=bool(self.settings.get('antigravity_enabled'))
+        wsl=is_wsl_source()
+        if wsl and not agy:
             self._codex_exit_gate.reset();return
         if not self.settings.get('codex_exit') or self._codex_polling or self._codex_closing:return
-        if self.settings.get('antigravity_enabled') and self._assistant_presence.get('antigravity') is not False:
-            self._codex_exit_gate.reset();return
         self._codex_polling=True
         generation=self._codex_exit_gate.generation
         def read():
             from codex_startup import desktop_sessions
-            try:value=desktop_sessions()
-            except Exception:value=None
+            if not agy:
+                try:value=desktop_sessions()
+                except Exception:value=None
+            else:
+                if wsl:codex_sessions=set()
+                else:
+                    try:codex_sessions=desktop_sessions()
+                    except Exception:codex_sessions=None
+                try:
+                    from antigravity import desktop_open
+                    agy_open=desktop_open()
+                except Exception:agy_open=None
+                if codex_sessions or agy_open is True:value=True
+                elif agy_open is False and codex_sessions is not None:value=False
+                else:value=None
             try:self.codexPresence.emit((generation,value))
             except RuntimeError:pass
         threading.Thread(target=read,name='BailongCodexPresence',daemon=True).start()
     def observe_codex_presence(self,packet):
         self._codex_polling=False
         if self._codex_closing or not self.settings.get('codex_exit'):return
-        if self.settings.get('antigravity_enabled') and self._assistant_presence.get('antigravity') is not False:
-            self._codex_exit_gate.reset();return
+        agy=bool(self.settings.get('antigravity_enabled'))
         from codex_connection import is_wsl_source
-        if is_wsl_source():
+        if is_wsl_source() and not agy:
             self._codex_exit_gate.reset();return
         generation,value=packet
         if generation!=self._codex_exit_gate.generation:return
+        if agy and not isinstance(value,bool) and value is not None:
+            open_agy=(getattr(self,'_assistant_presence',None) or {}).get('antigravity')
+            if value or open_agy is True:value=True
+            elif open_agy is False:value=False
+            else:value=None
         if self._codex_exit_gate.observe(value):self.close()
 
     def asset_path(self,item):
@@ -593,6 +612,7 @@ class DesktopPet(EnhancedPet):
         super().mousePressEvent(event)
         self.schedule_animation()
     def mouseMoveEvent(self,event):
+        if getattr(self,'_attached_card_drag',False):return
         if self.settings.get('no_move'):return
         if not self._pointer_pressed and not self.dragging:return
         # User dragging is the highest priority; it can interrupt a task gesture.
@@ -622,6 +642,7 @@ class DesktopPet(EnhancedPet):
         # Independent/hidden panels do not enter DragPanel's transaction.
         if self.edge_dock.active or self.edge_dock.amount>0:self.edge_dock.clear(immediate=True)
     def mouseReleaseEvent(self,event):
+        if getattr(self,'_attached_card_drag',False):return
         if event.button()!=Qt.MouseButton.LeftButton:return
         had_press=self._pointer_pressed or self.dragging
         self._pointer_pressed=False;self._pointer_epoch+=1
@@ -658,15 +679,51 @@ class DesktopPet(EnhancedPet):
 
     def cancel_pointer(self):
         """A lost grab has no release event; finish safely without a click or throw."""
+        attached_drag=getattr(self,'_attached_card_drag',False)
+        undocked=getattr(self,'_attached_card_undocked',False)
+        self._attached_card_drag=False;self._attached_card_undocked=False
+        if attached_drag and hasattr(self,'bubble'):
+            self.bubble._card_press=None;self.bubble._card_dragged=False
         if not (self._pointer_pressed or self.dragging):return
         was_dragging=self.dragging
         self._drag_move_timer.stop();self._drag_pointer=None
         self._pointer_pressed=False;self._pointer_epoch+=1;self.dragging=False
         self.drag_samples.clear();self.last_click=None;self.click_timer.stop()
         if hasattr(self,'drag_panel'):self.drag_panel.finish()
+        if undocked and hasattr(self,'bubble'):self.bubble.set_edge_compact(False)
         if self.mode=='drag':self.gate.state='idle';self.idle()
         if was_dragging:self.remember_wander_home();self.save_settings()
         if self.enhanced_ready:self.bubble.refresh_status();self.position_bubble()
+
+    def begin_attached_drag(self,press_pos,origin):
+        self.roaming.cancel();self.stop_walk();self.throwing=False
+        self.press_pos=press_pos;self.origin=origin
+        self._attached_card_drag=True;self._attached_card_undocked=False
+        self.dragging=True;self.click_timer.stop();self.last_click=None;self.generation+=1;self.bubble_timer.stop();self.gate.state='drag'
+        self._last_drag_move=0.;self.drag_samples.clear();self.drag_samples.append((time.perf_counter(),self.x(),self.y()))
+        if self.edge_dock.active or self.edge_dock.amount>0:
+            self._attached_card_undocked=True
+            # Keep the compact grabber widget alive until mouse release.
+            self.edge_dock.clear(immediate=True,update_panel=False)
+        self.play(self.manifest.get('dragAnimation') or self.idles[0],'drag')
+        self.position_bubble()
+
+    def move_attached_drag(self,pointer):
+        if not self._attached_card_drag or not self.dragging or self.settings.get('no_move'):return
+        self.move_drag_pointer(pointer)
+
+    def finish_attached_drag(self):
+        if not self._attached_card_drag:return
+        self._attached_card_drag=False
+        undocked=self._attached_card_undocked;self._attached_card_undocked=False
+        self.flush_drag_pointer()
+        self.dragging=False;self.last_click=None;self.click_timer.stop();self.gate.state='idle'
+        if self.edge_dock.try_dock():
+            self.remember_wander_home();self.bubble.refresh_status();self.position_bubble();self.save_settings();return
+        if undocked:self.bubble.set_edge_compact(False)
+        self.remember_wander_home()
+        self.play(self.manifest.get('landingAnimation') or self.idles[0],'landing')
+        self.bubble.refresh_status();self.position_bubble();self.save_settings()
 
     def cancel_lost_grab(self,epoch):
         if epoch==self._pointer_epoch:self.cancel_pointer()
@@ -684,7 +741,10 @@ class DesktopPet(EnhancedPet):
                 now=time.monotonic()
                 for sid,status in self.antigravity_bridge.tasks.active.items():
                     self.reactions.confirm(sid,status['turn'],True,now)
-            self._assistant_presence[SOURCE]=presence;self.update_assistant_presence();return
+            self._assistant_presence[SOURCE]=presence;self.update_assistant_presence();self.observe_combined_status()
+            if self.settings_dialog and hasattr(self.settings_dialog,'refresh_antigravity_health'):
+                self.settings_dialog.refresh_antigravity_health()
+            return
         if event.get('kind')=='antigravity_native':
             if self.bubble.antigravity_enabled and self.antigravity_bridge:
                 for result in self.antigravity_bridge.tasks.observe_native(event['turns'],event['overview']):
@@ -761,13 +821,20 @@ class DesktopPet(EnhancedPet):
         present=True if True in values else False if all(value is False for value in values) else None
         self.reactions.present=present;self.bubble.codex_open=present;self.bubble.evaluate_mode()
 
+    def antigravity_listener_ready(self):
+        if not self.bubble.antigravity_enabled:return False
+        if self.antigravity_bridge is not None:return bool(self.antigravity_bridge.server.isListening())
+        return not self._monitor_assistants and self._assistant_presence.get('antigravity') is not False
+
     def observe_combined_status(self,event=None):
         if not self.bubble.antigravity_enabled:return
         active=len(self.antigravity_bridge.tasks.active) if self.antigravity_bridge else 0
         base=self.last_activity
         if not active and event is not None and event.get('session','').startswith('antigravity:') and not base.get('active'):
             base=event
-        merged=dict(event or {},state='working' if active else base.get('state','idle'),
+        state='working' if active else base.get('state','idle')
+        if state=='offline' and self.antigravity_listener_ready():state='idle'
+        merged=dict(event or {},state=state,
                     active=active+base.get('active',0),waiting=base.get('waiting',0))
         self.bubble.status_indicator.observe(merged)
 
@@ -776,6 +843,7 @@ class DesktopPet(EnhancedPet):
         self.bubble.antigravity_enabled=enabled
         self.bubble.card_source=self.settings.get('card_source','codex') if enabled else 'codex'
         self.bubble.antigravity_quota_group=self.settings['antigravity_quota_group']
+        self.bubble.status_indicator.set_source_label('Antigravity' if self.bubble.card_source=='antigravity' else 'Codex')
         if self.activity:self.activity.watch_antigravity=enabled
         if enabled and self._monitor_assistants:
             if self.antigravity_bridge is None:
@@ -786,7 +854,9 @@ class DesktopPet(EnhancedPet):
         elif self.antigravity_bridge and self.antigravity_bridge.server.isListening():
             for event in self.antigravity_bridge.tasks.disconnect():
                 self.bubble.roster.observe(event);self.reactions.observe(event,time.monotonic())
-            self.antigravity_bridge.close();self.bubble.status_indicator.observe(self.last_activity)
+            self.antigravity_bridge.close()
+        if enabled:self.observe_combined_status()
+        else:self.bubble.status_indicator.observe(self.last_activity)
         self.update_assistant_presence()
         self._refresh_tray_icon()
         if self.bubble.card_source=='antigravity' and self._monitor_assistants:
@@ -796,6 +866,17 @@ class DesktopPet(EnhancedPet):
 
     def refresh_visible_antigravity(self):
         if self.bubble.card_source=='antigravity' and self.bubble.isVisible():
+            self.request_antigravity_data()
+
+    def set_antigravity_project_range(self,bounds,*,refresh=True):
+        if self._antigravity_project_range==bounds:return
+        self._antigravity_project_range=bounds
+        if refresh and bounds is not None and self.bubble.card_source=='antigravity':
+            self.request_antigravity_data()
+
+    def refresh_pricing_targets(self):
+        self.refresh_tokens()
+        if self.bubble.antigravity_enabled and self.bubble.card_source=='antigravity':
             self.request_antigravity_data()
 
     def request_antigravity_data(self,target=None):
@@ -811,6 +892,14 @@ class DesktopPet(EnhancedPet):
             self.antigravity_data=AntigravityData(STATE_DIR/'antigravity-usage.sqlite3',root,profile,self)
             self.antigravity_data.finished.connect(self.antigravity_data_ready)
         if not self._antigravity_data_refreshing:
+            from antigravity import SOURCE,source_of
+            active=self.antigravity_bridge.tasks.active.keys() if self.antigravity_bridge else ()
+            unread=[sid for sid,_ in reversed(self.bubble.status_indicator.unread) if source_of(sid)==SOURCE]
+            selected=getattr(self.bubble,'antigravity_selected_session','')
+            sessions=[sid for sid in (*active,*unread,selected) if sid and source_of(sid)==SOURCE]
+            self.antigravity_data.priority_sessions=tuple(dict.fromkeys(sessions))
+            self.antigravity_data.quota_group=self.bubble.antigravity_quota_group
+            self.antigravity_data.project_range=self._antigravity_project_range
             self._antigravity_data_refreshing=True;self.antigravity_data.start()
 
     def antigravity_data_ready(self):
@@ -819,11 +908,24 @@ class DesktopPet(EnhancedPet):
         quota=self.antigravity_data.quota
         quota_changed=quota is not None and quota!=self.bubble.antigravity_quota
         if quota_changed:self.bubble.antigravity_quota=quota
+        if isinstance(quota,dict) and time.time()-quota.get('observed',0)<=120:
+            for group,windows in (quota.get('pools') or {}).items():
+                for window in windows:
+                    key=(group,window.get('name'),window.get('resetsAt'))
+                    value=window.get('remaining')
+                    if isinstance(value,(int,float)) and not isinstance(value,bool) and value<=15 and key not in self.antigravity_low_notified:
+                        self.antigravity_low_notified.add(key)
+                        self.notify('Antigravity 额度提醒',f"{group} {window.get('name','')}额度仅剩 {value:g}%")
         if snapshot is not None:
             if not snapshot.get('report') and self.bubble.antigravity_snapshot:
                 snapshot=dict(self.bubble.antigravity_snapshot,partial=True,refresh_failed=True,unavailable=True)
             self.bubble.antigravity_snapshot=snapshot
+            titles=snapshot.get('session_titles')
+            if isinstance(titles,dict) and titles:
+                self.bubble.roster.update_names(titles)
         if self.closing or getattr(self,'_antigravity_data_exit_pending',False):return
+        if self.settings_dialog and hasattr(self.settings_dialog,'refresh_antigravity_health'):
+            self.settings_dialog.refresh_antigravity_health()
         if snapshot and snapshot.get('pending') and self.bubble.card_source=='antigravity':
             QTimer.singleShot(150,self,self.request_antigravity_data);return
         targets=self._antigravity_refresh_targets.copy();self._antigravity_refresh_targets.clear()
@@ -937,15 +1039,17 @@ class DesktopPet(EnhancedPet):
         if (previous.get('character_visible',True) and values.get('character_visible') is False) or (not previous.get('panel_detached') and values.get('panel_detached') is True):
             self.remember_card_anchor(self.bubble.content_geometry())
             if 'card_anchor' not in values:candidate['card_anchor']=copy.deepcopy(self._card_anchor)
-        if 'codex_exit' in values and values['codex_exit']!=previous.get('codex_exit'):
+        if ('codex_exit' in values and values['codex_exit']!=previous.get('codex_exit')) or ('antigravity_enabled' in values and values['antigravity_enabled']!=previous.get('antigravity_enabled')):
             self._codex_exit_gate.reset()
         scale_anchor=self._preview_character_rect or self.geometry()
         if scale_change:self._surface_preview=None;self._preview_character_rect=None
         self.settings=candidate
         self.bubble.antigravity_quota_group=self.settings['antigravity_quota_group']
+        source_change=any(candidate.get(key)!=previous.get(key) for key in ('card_source','antigravity_enabled'))
         if self.settings['antigravity_quota_group']!=previous.get('antigravity_quota_group'):
             self._refresh_tray_icon()
-        source_change=any(candidate.get(key)!=previous.get(key) for key in ('card_source','antigravity_enabled'))
+            if self.bubble.card_source=='antigravity' and self._monitor_assistants and not source_change:
+                QTimer.singleShot(0,self,self.request_antigravity_data)
         if source_change:
             if self.bubble.report:
                 if self.bubble.report.requested:self.bubble.report.dismiss()
@@ -1371,16 +1475,18 @@ class DesktopPet(EnhancedPet):
         if self.bubble.card_source=='antigravity':self.request_antigravity_data()
 
     def open_quota_comparison(self):
-        if self.bubble.card_source=='antigravity':return
         if self.bubble.report is not None and self.bubble.report.requested and self.bubble.report.page=='cycle':
             self.bubble.report.dismiss();return
         if self.bubble.report is None:
             from daily_report import DailyReport
             self.bubble.report=DailyReport(self.bubble)
             self.bubble.report.refreshRequested.connect(self.refresh_report)
-        report=self.bubble.report;report.set_snapshot(self.bubble.token_snapshot)
+        snapshot=self.bubble.selected_snapshot()
+        if self.bubble.card_source=='antigravity' and snapshot is None:snapshot={'provider':'antigravity'}
+        report=self.bubble.report;report.set_snapshot(snapshot)
         report.set_page('cycle')
         if not report.requested:report.open(page='cycle')
+        if self.bubble.card_source=='antigravity':self.request_antigravity_data()
 
     def open_settings(self):
         if self.bubble.panel_page=='status':self.roaming.preview_footprint=self.roaming.footprint()
