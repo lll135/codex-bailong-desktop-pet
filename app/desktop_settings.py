@@ -106,12 +106,12 @@ class SettingsDialog(QDialog):
         outer=QVBoxLayout(self);self.tabs=QTabWidget();self.tabs.setMinimumWidth(0)
         outer.setContentsMargins(0,0,0,0) if embedded else outer.setContentsMargins(12,10,12,10)
         outer.setSpacing(9);self.tabs.setDocumentMode(True);self.tabs.tabBar().setExpanding(True)
-        self.category_buttons=[];self.page_titles=['外观与显示','人物与活动','状态与联动','角色与素材','自动台词','更新与维护']
+        self.category_buttons=[];self.page_titles=['外观与显示','人物与活动','运行与连接','角色与素材','自动台词','更新与维护']
         body=QWidget();body_row=QHBoxLayout(body);body_row.setContentsMargins(0,0,0,0);body_row.setSpacing(11)
         sidebar=QWidget();sidebar.setObjectName('settings_sidebar');sidebar.setFixedWidth(57)
         nav=QVBoxLayout(sidebar);nav.setContentsMargins(0,0,8,0);nav.setSpacing(4)
         set_theme_style(sidebar,'QWidget#settings_sidebar{border:0;border-right:1px solid #e4dfea;background:transparent;}')
-        for index,label in enumerate(('面板','人物','Codex','素材','闲聊','维护')):
+        for index,label in enumerate(('面板','人物','运行','素材','闲聊','维护')):
             button=QPushButton(label);button.setObjectName('settings_category_'+str(index));button.setCheckable(True);button.setFixedHeight(33)
             button.setAccessibleName(self.page_titles[index]);button.setCursor(Qt.CursorShape.PointingHandCursor)
             set_theme_style(button,'QPushButton{'+FONT_CSS+f'font-size:11px;min-height:33px;max-height:33px;border:0;border-radius:6px;background:{PANEL};color:{MUTED};padding:0;}}QPushButton:hover{{background:{SELECTED};color:{INK};}}QPushButton:checked,QPushButton:checked:hover{{background:{SELECTED};color:{PRIMARY};}}')
@@ -127,7 +127,7 @@ class SettingsDialog(QDialog):
         from data_page_motion import PageFade
         self._category_motion=PageFade(self.tabs);self._category_index=0;self._category_ticket=0
         self._page_forms={};self._built_pages=set();self._building_index=0;self.refresh_buttons={}
-        for title in ['面板与显示', '人物与动作', 'Codex 联动', '角色与素材', '闲聊与台词', '更新与维护']:self.tab(title)
+        for title in ['面板与显示', '人物与动作', '运行与连接', '角色与素材', '闲聊与台词', '更新与维护']:self.tab(title)
         self.build_page(0)
         if not lazy:
             for index in range(1,6):self.build_page(index)
@@ -290,7 +290,7 @@ class SettingsDialog(QDialog):
 
     def build_page_2(self):
         pet=self.pet
-        connection=self.tab('Codex 联动')
+        connection=self.tab('运行与连接')
         if sys.platform=='win32':
             self.section(connection,'Antigravity',None)
             self.check(connection,'antigravity_enabled','监听 Antigravity 桌面 App')
@@ -533,7 +533,7 @@ class SettingsDialog(QDialog):
         area.viewport().setAutoFillBackground(False);widget.setAutoFillBackground(False)
         bar=area.verticalScrollBar();bar.setSingleStep(32)
         bar.rangeChanged.connect(lambda low,high,b=bar:b.setEnabled(high>low))
-        index=self.tabs.addTab(area,{'面板与显示':'面板','人物与动作':'人物','Codex 联动':'Codex','角色与素材':'素材','闲聊与台词':'台词','更新与维护':'维护'}.get(title,title))
+        index=self.tabs.addTab(area,{'面板与显示':'面板','人物与动作':'人物','运行与连接':'运行','角色与素材':'素材','闲聊与台词':'台词','更新与维护':'维护'}.get(title,title))
         self.tabs.setTabToolTip(index,title)
         self._page_forms[title]=form
         return form

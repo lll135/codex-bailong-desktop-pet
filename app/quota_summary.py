@@ -4,7 +4,7 @@ from theme_registry import color as theme_color
 from theme_runtime import set_theme_style,theme_style_source
 import math,time
 from PySide6.QtCore import Qt,QRectF,QSize,QPoint,QPointF,Signal,QTimer,QVariantAnimation,QEasingCurve,QAbstractAnimation,QEvent
-from PySide6.QtGui import QPainter,QPainterPath,QPen,QColor,QFontMetrics,QPixmap,QCursor
+from PySide6.QtGui import QPainter,QPainterPath,QPen,QColor,QFontMetrics,QFontMetricsF,QPixmap,QCursor
 from PySide6.QtWidgets import QApplication,QWidget,QToolButton
 from compact_bubble import font,INK,MUTED
 from quota_summary_data import quota_items,today_tokens
@@ -249,19 +249,29 @@ class QuotaSummary(QWidget):
         p.setFont(font(12,True));p.setPen(theme_color(MUTED))
         p.drawText(QRectF(10,y+3,self.width()-20,18),Qt.AlignmentFlag.AlignVCenter,date if precise else item['label'])
         value=item['display'];rect=self.value_rect(index)
-        p.setFont(font(18,True))
-        if QFontMetrics(p.font()).horizontalAdvance(value)>rect.width():p.setFont(font(14,True))
+        text=clock if precise else item['reset_text'].removesuffix('后重置')
+        reset_font=font(11);reset_metrics=QFontMetrics(reset_font,p.device())
+        value_font=font(18,True);small_font=font(14,True)
+        # The arc extends 14px left of the countdown, including its stroke.
+        reset_right=self.width()-10;icon_reserve=14;gap=4
+        small_metrics=QFontMetricsF(small_font,p.device())
+        small_width=max(small_metrics.horizontalAdvance(value),small_metrics.tightBoundingRect(value).right())
+        budget=math.floor(reset_right-rect.left()-small_width-icon_reserve-gap)
+        text=reset_metrics.elidedText(text,Qt.TextElideMode.ElideRight,max(0,budget))
+        tw=reset_metrics.horizontalAdvance(text);tx=reset_right-tw
+        value_limit=min(rect.width(),tx-icon_reserve-gap-rect.left()) if text else rect.width()
+        value_metrics=QFontMetricsF(value_font,p.device())
+        large_width=max(value_metrics.horizontalAdvance(value),value_metrics.tightBoundingRect(value).right())
+        p.setFont(value_font if large_width<=value_limit else small_font)
         p.setPen(theme_color(quota_color(item)) if item['remaining'] is not None else theme_color(MUTED))
         p.drawText(rect,Qt.AlignmentFlag.AlignVCenter,value)
-        text=clock if precise else item['reset_text'].removesuffix('后重置')
-        p.setFont(font(11));metrics=QFontMetrics(p.font());text=metrics.elidedText(text,Qt.TextElideMode.ElideRight,max(1,self.width()-64))
-        tw=metrics.horizontalAdvance(text);tx=self.width()-10-tw
-        p.setPen(QColor(theme_color('#98566d')) if item['expired'] else theme_color(MUTED))
-        p.drawText(QRectF(tx,y+23,tw,18),Qt.AlignmentFlag.AlignVCenter,text)
-        cx=tx-9;cy=y+32
-        p.setPen(QPen(theme_color(MUTED),1.15,Qt.PenStyle.SolidLine,Qt.PenCapStyle.RoundCap));p.setBrush(Qt.BrushStyle.NoBrush)
-        p.drawArc(QRectF(cx-4,cy-4,8,8),45*16,285*16)
-        p.drawLine(round(cx+3),round(cy-4),round(cx+3),round(cy-1))
+        if text:
+            p.setFont(reset_font);p.setPen(QColor(theme_color('#98566d')) if item['expired'] else theme_color(MUTED))
+            p.drawText(QRectF(tx,y+23,tw,18),Qt.AlignmentFlag.AlignVCenter,text)
+            cx=tx-9;cy=y+32
+            p.setPen(QPen(theme_color(MUTED),1.15,Qt.PenStyle.SolidLine,Qt.PenCapStyle.RoundCap));p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawArc(QRectF(cx-4,cy-4,8,8),45*16,285*16)
+            p.drawLine(round(cx+3),round(cy-4),round(cx+3),round(cy-1))
         self._track(p,self.track_rect(index),item)
     def paintEvent(self,event):
         self.ensure_static();p=QPainter(self);p.drawPixmap(0,0,self._static);p.setRenderHint(QPainter.RenderHint.Antialiasing);p.setPen(Qt.PenStyle.NoPen)

@@ -5,7 +5,7 @@ import time,unittest
 from datetime import datetime
 from unittest.mock import patch
 from PySide6.QtCore import Qt,QPoint,QPointF,QEvent,QAbstractAnimation
-from PySide6.QtGui import QMouseEvent,QHelpEvent,QPainter,QCursor
+from PySide6.QtGui import QMouseEvent,QHelpEvent,QPainter,QCursor,QFontMetricsF
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication,QToolTip,QLabel
 from compact_bubble import CompactBubble
@@ -98,6 +98,25 @@ class QuotaCardTests(unittest.TestCase):
         with patch.object(QApplication,'widgetAt',return_value=None):
             APP.sendEvent(card,QEvent(QEvent.Type.Leave));drain()
         self.assertIn(relative,painted_text(card))
+    def test_full_quota_leaves_gap_before_countdown_icon(self):
+        now=2000000000.
+        card=self.card([dict(name='5小时',remaining=100,resetsAt=now+296*60),
+                        dict(name='一周',remaining=70.8,resetsAt=now+5*86400+7*3600)],clock=lambda:now)
+        card.setFixedWidth(116);card._set_hover_at(None);card._static_key=None
+        texts={};icons=[]
+        class Recorder(QPainter):
+            def drawText(self,*args):
+                rect,_,text=args
+                metrics=QFontMetricsF(self.font(),self.device())
+                texts[text]=rect.left()+metrics.tightBoundingRect(text).right()
+                return super().drawText(*args)
+            def drawArc(self,rect,start,span):
+                icons.append(rect.left()-self.pen().widthF()/2)
+                return super().drawArc(rect,start,span)
+        with patch('quota_summary.QPainter',Recorder):card.grab()
+        for value,clock,left in zip(('100%','70.8%'),('4时56分','5天7时'),icons,strict=True):
+            self.assertIn(clock,texts)
+            self.assertGreaterEqual(left-texts[value],4)
     def test_hover_covers_edges_and_stays_active_across_the_badge(self):
         for expanded in (False,True):
             card=QuotaSummary([dict(name='一周',remaining=73)],expanded=expanded,

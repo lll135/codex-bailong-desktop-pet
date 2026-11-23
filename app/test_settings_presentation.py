@@ -91,6 +91,11 @@ class SettingsPresentationTests(unittest.TestCase):
         self.assertFalse(any(b.text()=='返回' for b in self.editor.findChildren(QPushButton)))
         self.assertEqual(len(self.editor.fields['theme'].buttons),9)
         self.assertEqual(sum(not button.isHidden() for button in self.editor.fields['theme'].buttons),8)
+        self.assertEqual(self.editor.category_buttons[2].text(),'运行')
+        self.editor.category_buttons[2].click();APP.processEvents()
+        self.assertEqual(self.editor.category_title.text(),'运行与连接')
+        self.assertEqual(self.editor.tabs.tabText(2),'运行')
+        self.assertIn('codex_exit',self.editor.fields)
     def test_category_and_roaming_subpage_have_body_transitions(self):
         from unittest.mock import patch
         with patch('settings_controls.motion_enabled',return_value=True):
