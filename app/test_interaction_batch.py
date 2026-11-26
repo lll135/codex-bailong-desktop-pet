@@ -162,7 +162,7 @@ class InteractionTests(unittest.TestCase):
         self.assertEqual(s.mode.currentData(),'mini');self.assertTrue(s.startup.isChecked());self.startup.assert_not_called()
     def test_setting_categories_keep_startup_response_and_automatic_lines_grouped(self):
         s=self.settings()
-        self.assertEqual([s.tabs.tabText(i) for i in range(s.tabs.count())],['面板','人物','Codex','素材','台词','维护'])
+        self.assertEqual([s.tabs.tabText(i) for i in range(s.tabs.count())],['面板','人物','运行','素材','台词','维护'])
         for key,tab in [('bubble_mode',0),('panel_detached',0),('scale',1),('drag_physics',1),('startup',2),('codex_startup',2),('codex_exit',2),('commentary',2),('status_actions',2),('self_talk',4),('talk_lines',4),('update_checks',5)]:
             self.assertEqual(s.field_tabs[key],tab,key)
         s.fields['self_talk'].setChecked(True);s.lines.setPlainText('保留的台词草稿')

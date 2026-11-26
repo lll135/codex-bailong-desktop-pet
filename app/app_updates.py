@@ -3,7 +3,8 @@ from dataclasses import dataclass,replace
 from pathlib import Path,PurePosixPath
 import hashlib,json,os,re,sys,urllib.request,urllib.error,urllib.parse,zipfile,time
 
-REPOSITORY='Wunsch2048/codex-bailong-desktop-pet'
+REPOSITORY='lll135/codex-bailong-desktop-pet'
+MATERIAL_REPOSITORY='Wunsch2048/codex-bailong-desktop-pet'
 API='https://api.github.com/repos/'+REPOSITORY+'/releases/latest'
 MAX_PACKAGE=2_147_483_647
 class UpdateError(Exception):pass
@@ -20,11 +21,15 @@ def version_tuple(value):
     return tuple(int(v) for v in match[1].split('.'))
 
 def release_url(tag):return 'https://github.com/'+REPOSITORY+'/releases/tag/'+tag
-def asset_url(value,tag,name):
-    p=urllib.parse.urlsplit(str(value));expected='/'+REPOSITORY+'/releases/download/'+tag+'/'
-    if p.scheme!='https' or p.hostname!='github.com' or p.username or p.password or p.port not in (None,443) or not p.path.startswith(expected) or urllib.parse.unquote(p.path[len(expected):])!=name or p.query or p.fragment:
+def asset_url(value,tag,name,*,repositories=None):
+    p=urllib.parse.urlsplit(str(value));allowed=repositories or (REPOSITORY,)
+    if p.scheme!='https' or p.hostname!='github.com' or p.username or p.password or p.port not in (None,443) or p.query or p.fragment:
         raise UpdateError('更新文件地址与本项目不匹配')
-    return str(value)
+    for repo in allowed:
+        expected='/'+repo+'/releases/download/'+tag+'/'
+        if p.path.startswith(expected) and urllib.parse.unquote(p.path[len(expected):])==name:
+            return str(value)
+    raise UpdateError('更新文件地址与本项目不匹配')
 
 @dataclass(frozen=True)
 class Release:

@@ -705,8 +705,9 @@ class EnhancedPet(Pet):
     def _tray_window(self):
         """Return the same priority window used by the capsule quota ring."""
         from island_widgets import selected_quota, valid_percent
-        if getattr(self.bubble,'card_source','codex')=='antigravity':
-            windows,_=self.bubble.selected_quota_data()
+        bubble=getattr(self,'bubble',None)
+        if getattr(bubble,'card_source','codex')=='antigravity':
+            windows,_=bubble.selected_quota_data()
             window=selected_quota(windows)
             window['name']='Antigravity '+window['name'] if windows else 'Antigravity'
         else:window=selected_quota(self.quota_windows or [])

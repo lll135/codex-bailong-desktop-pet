@@ -1158,11 +1158,14 @@ class CompactBubble(Bubble):
             daily.set_selected(front=='tokens' and self.token_range=='day')
             from live_rate_ui import LiveRateCard
             footer=QWidget(container);footer.setObjectName('status_footer');footer_row=QHBoxLayout(footer);footer_row.setContentsMargins(0,0,0,0);footer_row.setSpacing(gap)
-            if getattr(self,'live_rate_card',None) is None:self.live_rate_card=LiveRateCard(getattr(self,'live_output_rate',None),footer)
+            created=getattr(self,'live_rate_card',None) is None
+            rate_value=((snapshot or {}).get('historical_rate') or {'historical':True,'rate':None,'details':[]}) if agy else getattr(self,'live_output_rate',None)
+            if created:self.live_rate_card=LiveRateCard(rate_value,footer)
             else:
                 self.live_rate_card.setParent(footer)
-            rate_value=((snapshot or {}).get('historical_rate') or {'historical':True,'rate':None,'details':[]}) if agy else getattr(self,'live_output_rate',None)
-            self.live_rate_card.set_data(rate_value)
+                if agy or getattr(self,'_live_rate_source','codex')!=self.card_source or rate_value is not None:
+                    self.live_rate_card.set_data(rate_value)
+            self._live_rate_source=self.card_source
             self.live_rate_card.setEnabled(True)
             self.live_rate_card.expanded=self.expanded;self.live_rate_card.setFixedSize(left_width,footer_height)
             footer_row.addWidget(self.live_rate_card,1);self.live_rate_card.show()

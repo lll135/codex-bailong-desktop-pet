@@ -1848,7 +1848,7 @@ class DesktopPet(EnhancedPet):
     def closeEvent(self,event):
         if getattr(self,'_cleanup_job',None):
             self._cleanup_exit_pending=True;event.ignore();return
-        if self.antigravity_data and self.antigravity_data.isRunning():
+        if self.antigravity_data and callable(getattr(self.antigravity_data,'isRunning',None)) and self.antigravity_data.isRunning():
             self.antigravity_data.requestInterruption()
             if not getattr(self,'_antigravity_data_exit_pending',False):
                 self._antigravity_data_exit_pending=True;self.antigravity_data.finished.connect(self.close)

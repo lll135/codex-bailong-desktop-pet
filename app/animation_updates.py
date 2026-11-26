@@ -3,7 +3,7 @@ import hashlib,json,re,time
 from dataclasses import replace
 from pathlib import Path
 
-from app_updates import UpdateError,read_small,ensure_checksum,version_tuple,asset_url
+from app_updates import MATERIAL_REPOSITORY,REPOSITORY,UpdateError,read_small,ensure_checksum,version_tuple,asset_url
 
 RECEIPT='animation-release.json'
 
@@ -26,7 +26,7 @@ def validate_catalog(catalog,version):
         identity=hashlib.sha256(json.dumps(sorted(files,key=lambda f:f['path']),sort_keys=True,ensure_ascii=False).encode()).hexdigest()[:24]
         if spec.get('id')!=identity:raise UpdateError('动画补丁内容标识不匹配')
         name=f'bailong-desktop-pet-{version}-animation-{tier}.zip'
-        asset_url(spec.get('url'),'v'+version,name)
+        asset_url(spec.get('url'),'v'+version,name,repositories=(REPOSITORY,MATERIAL_REPOSITORY))
         if type(spec.get('archiveBytes')) is not int or not 0<spec['archiveBytes']<2**31 or not re.fullmatch('[0-9a-f]{64}',str(spec.get('archiveSha256',''))):raise UpdateError('动画补丁压缩包校验信息无效')
     return catalog
 

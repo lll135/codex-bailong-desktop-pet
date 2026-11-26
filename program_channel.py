@@ -6,7 +6,7 @@ one complete cumulative program archive, never to a sequence of delta patches.
 import hashlib,json,re,zipfile
 from pathlib import Path
 
-REPOSITORY='Wunsch2048/codex-bailong-desktop-pet'
+REPOSITORY='lll135/codex-bailong-desktop-pet'
 CHANNEL='program-channel.json'
 MAX_PACKAGE=2_147_483_647
 

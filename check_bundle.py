@@ -28,7 +28,7 @@ def check():
         source=compile((ROOT/'app'/f'{name}.py').read_text(encoding='utf-8'),name+'.py','exec')
         result[name]=signature(source)==signature(archive.extract(name))
     for name in ('chat_settings_ui','codex_wordmark','antigravity','antigravity_bridge','antigravity_chat','antigravity_chat_setup',
-                 'antigravity_data','antigravity_quota','antigravity_sidecar','antigravity_usage','desktop_settings','quick_actions'):
+                 'antigravity_data','antigravity_projects','antigravity_quota','antigravity_sidecar','antigravity_usage','desktop_settings','quick_actions'):
         source=compile((ROOT/'app'/f'{name}.py').read_text(encoding='utf-8'),name+'.py','exec')
         result[name]=signature(source)==signature(archive.extract(name))
     print(json.dumps(result,indent=2))

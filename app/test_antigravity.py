@@ -13,6 +13,15 @@ from session_read_state import session_id
 
 
 CONVERSATION = '23e53a97-3d24-4df6-9da6-9b58949062fd'
+_QT_APP = None
+
+
+def _qt_app():
+    global _QT_APP
+    os.environ.setdefault('QT_QPA_PLATFORM','offscreen')
+    from PySide6.QtWidgets import QApplication
+    _QT_APP = QApplication.instance() or QApplication([])
+    return _QT_APP
 
 
 def packet(event, conversation=CONVERSATION, **fields):
@@ -213,10 +222,9 @@ class StatusRecoveryTests(unittest.TestCase):
         self.assertFalse(any(e.get('kind')=='status' for e in batch3))
 
     def test_activity_thread_recovery_status_uses_active_session_or_file_presence(self):
-        from PySide6.QtWidgets import QApplication
         from enhanced import ActivityThread
         from enhanced_core import Session
-        QApplication.instance() or QApplication([])
+        _qt_app()
         base,patches=self._isolated_state_patches('bailong-activity-recovery-test')
         home=base/'codex-home'
         (home/'sessions').mkdir(parents=True,exist_ok=True)
@@ -237,17 +245,16 @@ class StatusRecoveryTests(unittest.TestCase):
         self.assertEqual(status['active'],1)
 
     def test_antigravity_combined_status_does_not_inherit_codex_offline(self):
-        os.environ.setdefault('QT_QPA_PLATFORM','offscreen')
         from types import SimpleNamespace
-        from PySide6.QtWidgets import QApplication
+        from PySide6.QtCore import QEvent
         from desktop import DesktopPet
-        APP=QApplication.instance() or QApplication([])
+        APP=_qt_app()
         _,patches=self._isolated_state_patches('bailong-agy-combined-status-test')
         for p in patches:
             p.start()
             self.addCleanup(p.stop)
         pet=DesktopPet(monitor=False)
-        self.addCleanup(lambda:(pet.close(),APP.processEvents()))
+        self.addCleanup(lambda:(pet.close(),APP.processEvents(),APP.sendPostedEvents(None,QEvent.Type.DeferredDelete),APP.processEvents()))
         pet.apply_settings(dict(antigravity_enabled=True,wandering=False,random_actions=False),save=False)
 
         pet.on_activity(dict(kind='status',state='offline',active=0,text='尚未找到本机 Codex 会话'))
@@ -297,9 +304,9 @@ class StatusRecoveryTests(unittest.TestCase):
 
     def test_low_quota_alert_source_labels_diagnostics_focus_and_exit_linkage(self):
         import time
-        os.environ.setdefault('QT_QPA_PLATFORM','offscreen')
         from types import SimpleNamespace
-        from PySide6.QtWidgets import QApplication,QLabel
+        from PySide6.QtCore import QEvent
+        from PySide6.QtWidgets import QLabel
         from antigravity import connection_diagnostics
         from antigravity_quota import normalize_quota
         from desktop import DesktopPet
@@ -307,20 +314,19 @@ class StatusRecoveryTests(unittest.TestCase):
         from status_indicator import StatusIndicator
         from surface_policy import SurfacePolicy
 
-        APP=QApplication.instance() or QApplication([])
+        APP=_qt_app()
         base,patches=self._isolated_state_patches('bailong-agy-linkage-test')
         for p in patches:
             p.start()
             self.addCleanup(p.stop)
 
         pet=DesktopPet(monitor=False)
-        self.addCleanup(lambda:(pet.close(),APP.processEvents()))
+        self.addCleanup(lambda:(pet.close(),APP.processEvents(),APP.sendPostedEvents(None,QEvent.Type.DeferredDelete),APP.processEvents()))
         pet.apply_settings(dict(antigravity_enabled=True,card_source='antigravity',codex_exit=True,wandering=False,random_actions=False),save=False)
 
         # 1. StatusIndicator & StatusIsland source labels (no middle dots for Antigravity).
         self.assertEqual(pet.bubble.status_indicator.source_label,'Antigravity')
         ind=StatusIndicator()
-        self.addCleanup(ind.deleteLater)
         self.assertEqual(ind.toolTip(),'Codex 待命')
         ind.set_source_label('Antigravity')
         self.assertEqual(ind.toolTip(),'Antigravity 待命')
@@ -329,7 +335,7 @@ class StatusRecoveryTests(unittest.TestCase):
         self.assertEqual(ind.toolTip(),'Antigravity 任务已完成，已确认')
         self.assertNotIn('·',ind.toolTip())
         island=StatusIsland(ind)
-        self.addCleanup(island.deleteLater)
+        self.addCleanup(lambda:(island.close(),APP.processEvents()))
         self.assertTrue(island.accessibleName().startswith('Antigravity '))
         ind.set_source_label('Codex')
         self.assertIn('·',ind.toolTip())
@@ -341,7 +347,7 @@ class StatusRecoveryTests(unittest.TestCase):
         ]},now=now)
         snap_ok={'provider':'antigravity','report':{'day':'2026-11-23','yesterday_total':0,'all_total':0,'hours':[0]*24},
                  'today_breakdown':{},'recent_sessions':[],'session_requests':{},'historical_rate':{'rate':None,'sessions':0,'details':[],'historical':True}}
-        pet.antigravity_data=SimpleNamespace(snapshot=snap_ok,quota=q_low)
+        pet.antigravity_data=SimpleNamespace(snapshot=snap_ok,quota=q_low,isRunning=lambda:False)
         with patch.object(pet,'notify') as notify:
             pet.antigravity_data_ready()
             notify.assert_called_once()
@@ -349,7 +355,7 @@ class StatusRecoveryTests(unittest.TestCase):
             pet.antigravity_data_ready()
             notify.assert_called_once()
             q_stale={'observed':now-400,'pools':{'Gemini':[{'name':'一周','remaining':5.0,'resetsAt':now+999,'group':'Gemini'}]}}
-            pet.antigravity_data=SimpleNamespace(snapshot=snap_ok,quota=q_stale)
+            pet.antigravity_data=SimpleNamespace(snapshot=snap_ok,quota=q_stale,isRunning=lambda:False)
             pet.antigravity_data_ready()
             notify.assert_called_once()
 

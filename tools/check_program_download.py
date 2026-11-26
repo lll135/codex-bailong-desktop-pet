@@ -23,7 +23,7 @@ with zipfile.ZipFile(program,'w',zipfile.ZIP_DEFLATED) as z:
     z.writestr('payload-manifest.json',json.dumps(dict(version='1.2.1',files=files)))
     for n,b in core.items():z.writestr(n,b)
 name='bailong-desktop-pet-1.2.1-program.zip'
-channel=dict(schema=1,kind='program-channel',installerProtocol=1,version='1.2.1',program=dict(name=name,url='https://github.com/Wunsch2048/codex-bailong-desktop-pet/releases/download/v1.2.1/'+name,bytes=program.stat().st_size,sha256=hashlib.sha256(program.read_bytes()).hexdigest()))
+channel=dict(schema=1,kind='program-channel',installerProtocol=1,version='1.2.1',program=dict(name=name,url='https://github.com/lll135/codex-bailong-desktop-pet/releases/download/v1.2.1/'+name,bytes=program.stat().st_size,sha256=hashlib.sha256(program.read_bytes()).hexdigest()))
 (work/'program-channel.json').write_text(json.dumps(channel),encoding='utf-8')
 shared=work/'ProgramPatchBootstrap.cs';shared.write_text((TOOLS/shared.name).read_text(encoding='utf-8').replace('@@VERSION@@','1.0.1').replace('@@PAYLOAD_SHA@@','0'*64),encoding='utf-8')
 compiler,libraries=compiler_paths();exe=work/'NetworkHarness.exe'

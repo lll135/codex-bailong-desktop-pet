@@ -18,7 +18,7 @@ internal sealed class ProgramTarget {
 }
 
 internal sealed class ProgramDownload {
-    internal const string Repo="Wunsch2048/codex-bailong-desktop-pet";
+    internal const string Repo="lll135/codex-bailong-desktop-pet";
     internal const string Channel="https://github.com/"+Repo+"/releases/latest/download/program-channel.json";
     internal const long Maximum=2147483647;
     internal delegate void ReadResponse(string url,Action<Stream> read);
