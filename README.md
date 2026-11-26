@@ -2,23 +2,23 @@
 
 在桌面查看 Codex 任务状态、完成提醒、账户额度和 Token 用量，也可以让白龙陪你一起工作。支持仅卡片使用，人物动画按需下载。
 
-**[Windows 首次安装](https://github.com/Wunsch2048/codex-bailong-desktop-pet/releases/download/v1.9.0/bailong-desktop-pet-1.9.0-setup.exe)** | **[程序更新](https://github.com/Wunsch2048/codex-bailong-desktop-pet/releases/latest)** | [Linux 预览版](#linux--niri--kde) | [macOS 社区版](#macos)
+**[Windows 首次安装](https://github.com/lll135/codex-bailong-desktop-pet/releases/download/v1.10.0/bailong-desktop-pet-1.10.0-setup.exe)** | **[程序更新](https://github.com/lll135/codex-bailong-desktop-pet/releases/latest)** | [Linux 预览版](#linux--niri--kde) | [macOS 社区版](#macos)
 
-Windows 当前公开版 **v1.9.0**。在线安装器直接获取最新累计程序；已有用户可在“设置 → 维护 → 软件更新”升级，无需逐个安装旧补丁。升级保留设置、统计和已下载素材。
+Windows 当前公开版 **v1.10.0**。在线安装器直接获取最新累计程序；已有用户可在“设置 → 维护 → 软件更新”升级，无需逐个安装旧补丁。升级保留设置、统计和已下载素材。
 
 ![白龙桌宠封面](docs/media/cover.png)
 
 ## 最近更新
 
-### v1.9.0
+### v1.10.0
 
-- **图表成本**　模型页和卡片的柱状图悬停增加总成本，每个模型显示对应价格和 Token。总 Token 保持原来的样式。
-- **模型计价**　补齐 GPT-6.2 单价，新模型出现时主动检查价表，更新失败会重试。已有统计按补齐的价格重新计算。
-- **数字动画**　实时和今日数字经过中间数逐位滚动，支持上翻和下翻，移动时轻微虚化，停稳后恢复清晰。
-- **悬停与菜单**　浮窗贴近触发位置展开，跟随实际锚点，精简说明文字。改善刷新时浮窗突然消失和托盘浮窗抖动，修复右键桌宠导致崩溃的问题。
-- **卡片过渡**　台词出现和会话数量变化时平滑调整高度，减少文字模糊。修复额度周期切换跳闪和实时浮窗排版。
+- **Antigravity 联动**　在设置的「运行与连接」支持启用 Antigravity 监听并配置状态桥接 Hook 与额度桥接 Sidecar，卡片左上角可切换来源并打开对应应用，正常卡片同时展示 Codex 与 Antigravity 会话状态，白龙闲聊接入 Antigravity 对话。
+- **速率与明细**　主卡片与悬停窗显示 Antigravity 服务端历史生成速率，日报恢复昨日生成均速、模型均速与叠加曲线；展开卡片「最近请求」展示未缓存输入、缓存读写与输出明细、本轮多次请求合计以及上下文窗口占用进度条。
+- **额度与成本**　支持 Antigravity 多模型组切换与周额度周期对比，额度低于等于 15% 时弹出桌面提醒；按工作区路径汇总 Antigravity 项目成本并开放会话与回合下钻，计价设置合并展示两端模型单价。
+- **胶囊与状态**　修复附着或独立位置下的胶囊及极简模式无法拖动的问题，恢复有会话记录时从「未连接」误报切回待命，调整普通卡片双额度行排版避免百分比与重置图标重叠，状态图标与胶囊无障碍文本随当前来源切换。
+- **设置与连接**　设置页入口整理为「运行与连接」，增加 Antigravity 四项连接诊断摘要，开启监听后「仅在 Codex 前台时显示」与「Codex 关闭后退出桌宠」同步识别 Antigravity 桌面端。
 
-[查看 v1.9.0 完整更新与下载](https://github.com/Wunsch2048/codex-bailong-desktop-pet/releases/tag/v1.9.0)
+[查看 v1.10.0 完整更新与下载](https://github.com/lll135/codex-bailong-desktop-pet/releases/tag/v1.10.0)
 
 ## 主要功能
 
@@ -47,7 +47,7 @@ Windows 当前公开版 **v1.9.0**。在线安装器直接获取最新累计程�
 1. 运行顶部的 Windows 在线安装器，无需 Python 或管理员权限。
 2. 在本机安装并登录 Codex，发送一次消息，桌宠会自动发现本机数据。
 3. 需要人物时，在设置的素材页下载轻量或高清动画；只用卡片可以跳过。
-4. 没有数据时，打开“设置 → Codex → 检测连接与额度”。
+4. 没有数据时，打开“设置 → 运行与连接 → 检测连接与额度”。
 
 仅支持 Windows x64。离线安装、程序位置和数据目录见[快速部署](docs/快速部署说明.txt)；WSL 用户见 [WSL 接入](docs/WSL.md)。闲聊需要自行配置模型服务。
 
@@ -84,7 +84,7 @@ Linux 适配源码已合入主分支，预览包由 [helantianshen](https://gith
 
 ## 文档与反馈
 
-[使用说明](docs/使用说明.md) | [开发与构建](docs/DEVELOPMENT.md) | [维护规范](docs/维护规范验证入口.md) | [迭代历史](docs/迭代历史.txt) · [旧版专项记录](docs/archive) | [提交问题](https://github.com/Wunsch2048/codex-bailong-desktop-pet/issues/new/choose)
+[使用说明](docs/使用说明.md) | [开发与构建](docs/DEVELOPMENT.md) | [维护规范](docs/维护规范验证入口.md) | [迭代历史](docs/迭代历史.txt) · [旧版专项记录](docs/archive) | [提交问题](https://github.com/lll135/codex-bailong-desktop-pet/issues/new/choose)
 
 反馈请附版本、系统缩放和复现步骤，并去掉截图、日志中的私密信息。
 

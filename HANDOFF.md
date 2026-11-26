@@ -14,7 +14,8 @@ git status --short --branch
 
 ## 版本和验收
 
-- 仓库记录的 Windows 公开稳定版为 [v1.9.0](docs/releases/v1.9.0.md)。这次交接以源码分支为交付物。公开版本和本地实装分别按 AGENTS.md 升位。
+- 当前 Windows 公开稳定版为 **[v1.10.0](docs/releases/v1.10.0.md)**，已从 `codex/antigravity-desktop`（`7769be1`）公开发布至 [lll135/codex-bailong-desktop-pet Release v1.10.0](https://github.com/lll135/codex-bailong-desktop-pet/releases/tag/v1.10.0)。本次构建使用无 `--system-site-packages` 的隔离环境 `build\release-venv`（安装 `requirements-enhanced.txt` 官方 wheel，含 PySide6 TLS OpenSSL 后端与 `cryptography==50.0.2`），依次通过 165 个模块 1,927 项全量回归、`check_bundle.py` 编译核对、冻结 TLS（含仅保留系统 `PATH` 的独立核验）、4 档缩放原生交互、15 项在线下载与 6 项离线自举 C# 校验，以及全部 6 个 Release 附件的匿名公开流式下载与 SHA-256 一致性核验（素材下载仍指向 `Wunsch2048/codex-bailong-desktop-pet` `v1.3.0`）。
+- 仓库此前记录的 Windows 公开稳定版为 [v1.9.0](docs/releases/v1.9.0.md)。公开版本和本地实装继续按 AGENTS.md 各自递增。
 - 原电脑实装 v1.10.2，v1.10.1 可回退。v1.10.2 含 Antigravity 联动、主题色箭头和统一双来源标题。最后一次本地验收通过 69 项定向回归，并验证了实装启动、设定保留和回退包。
 - 分支后续已修「运行／运行与连接」菜单名称，以及普通卡片的额度百分比和重置图标重叠。设置检查 26 项、额度检查 46 项通过，额度问题在 150% 缩放下用 `100%` 和 `4时56分` 复测。两项修复仍待构建和实装。沿用原电脑 v1.10.2 基线时，它们作为修复版升到 v1.10.3。
 - 原电脑的 `本地实装/最终验收.json`、`本地实装/Antigravity联动验收.json`、构建目录、安装备份及真实用户资料都在本地。新电脑重新生成自己的验收记录。
